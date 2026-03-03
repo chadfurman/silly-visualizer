@@ -312,6 +312,11 @@ impl Renderer {
         }
     }
 
+    /// Current surface dimensions. Returns (0, 0) when minimized.
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.surface_config.width, self.surface_config.height)
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         if width > 0 && height > 0 {
             self.surface_config.width = width;

@@ -13,6 +13,12 @@ use analysis::AudioAnalyzer;
 use audio::{AudioCapture, AudioSource};
 use renderer::{AudioUniforms, Renderer};
 
+/// Decay rate for beat indicator (drops from 1.0 to 0 over several frames).
+const BEAT_DECAY: f32 = 0.15;
+/// Smoothing factor for audio values (0 = no smoothing, 1 = frozen).
+const SMOOTH_RETAIN: f32 = 0.8;
+const SMOOTH_INCOMING: f32 = 1.0 - SMOOTH_RETAIN;
+
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -23,32 +29,55 @@ struct App {
     audio_source: AudioSource,
 }
 
+impl App {
+    /// Create (or recreate) the audio capture for the current `audio_source`.
+    ///
+    /// On failure the source may be changed to a fallback. Returns the capture
+    /// on success, or `None` if no audio device is available.
+    fn create_audio_capture(&mut self) -> Option<AudioCapture> {
+        let capture = match self.audio_source {
+            AudioSource::Mic => AudioCapture::new_default_input(),
+            AudioSource::Loopback => AudioCapture::new_loopback().or_else(|e| {
+                log::warn!("loopback failed ({e}), falling back to mic");
+                self.audio_source = AudioSource::Mic;
+                AudioCapture::new_default_input()
+            }),
+        };
+
+        match capture {
+            Ok(c) => {
+                log::info!("audio capture started ({:?})", self.audio_source);
+                Some(c)
+            }
+            Err(e) => {
+                log::warn!("no audio device available ({e}), running silent");
+                None
+            }
+        }
+    }
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
-            let attrs = Window::default_attributes()
-                .with_title("silly visualizer");
+            let attrs = Window::default_attributes().with_title("silly visualizer");
             let window = Arc::new(event_loop.create_window(attrs).unwrap());
             let renderer = Renderer::new(window.clone());
             self.window = Some(window);
             self.renderer = Some(renderer);
         }
         if self.audio.is_none() {
-            self.audio = match self.audio_source {
-                AudioSource::Mic => AudioCapture::new_default_input().ok(),
-                AudioSource::Loopback => AudioCapture::new_loopback()
-                    .or_else(|e| {
-                        log::warn!("loopback failed ({e}), falling back to mic");
-                        AudioCapture::new_default_input()
-                    })
-                    .ok(),
-            };
+            self.audio = self.create_audio_capture();
             self.analyzer = Some(AudioAnalyzer::new(2048));
-            log::info!("audio capture started ({:?})", self.audio_source);
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _id: WindowId,
+        event: WindowEvent,
+    ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -57,20 +86,44 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let (Some(audio), Some(analyzer)) =
-                    (&self.audio, &mut self.analyzer)
+                // Skip rendering when minimized (surface size 0)
+                if let Some(renderer) = &self.renderer
+                    && renderer.surface_size() == (0, 0)
                 {
+                    // Still request redraw so we resume when un-minimized
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+
+                // Analyze audio and apply exponential smoothing
+                if let (Some(audio), Some(analyzer)) = (&self.audio, &mut self.analyzer) {
                     let samples = audio.get_samples();
                     if !samples.is_empty() {
                         let result = analyzer.analyze(&samples);
-                        self.uniforms.bass = result.bass * self.sensitivity;
-                        self.uniforms.mids = result.mids * self.sensitivity;
-                        self.uniforms.highs = result.highs * self.sensitivity;
-                        self.uniforms.energy = result.energy * self.sensitivity;
-                        self.uniforms.beat = result.beat;
+
+                        // Smooth continuous values (bass, mids, highs, energy)
+                        self.uniforms.bass = self.uniforms.bass * SMOOTH_RETAIN
+                            + result.bass * self.sensitivity * SMOOTH_INCOMING;
+                        self.uniforms.mids = self.uniforms.mids * SMOOTH_RETAIN
+                            + result.mids * self.sensitivity * SMOOTH_INCOMING;
+                        self.uniforms.highs = self.uniforms.highs * SMOOTH_RETAIN
+                            + result.highs * self.sensitivity * SMOOTH_INCOMING;
+                        self.uniforms.energy = self.uniforms.energy * SMOOTH_RETAIN
+                            + result.energy * self.sensitivity * SMOOTH_INCOMING;
+
+                        // Beat: snap to 1.0 on detection, otherwise decay toward 0
+                        if result.beat > 0.5 {
+                            self.uniforms.beat = 1.0;
+                        } else {
+                            self.uniforms.beat = (self.uniforms.beat - BEAT_DECAY).max(0.0);
+                        }
+
                         self.uniforms.bands = result.bands;
                     }
                 }
+
                 if let Some(renderer) = &mut self.renderer {
                     renderer.render(&mut self.uniforms);
                 }
@@ -89,17 +142,7 @@ impl ApplicationHandler for App {
                             };
                             // Drop current capture, create new one with toggled source
                             self.audio = None;
-                            self.audio = match self.audio_source {
-                                AudioSource::Mic => AudioCapture::new_default_input().ok(),
-                                AudioSource::Loopback => AudioCapture::new_loopback()
-                                    .or_else(|e| {
-                                        log::warn!("loopback failed ({e}), falling back to mic");
-                                        self.audio_source = AudioSource::Mic;
-                                        AudioCapture::new_default_input()
-                                    })
-                                    .ok(),
-                            };
-                            log::info!("audio source: {:?}", self.audio_source);
+                            self.audio = self.create_audio_capture();
                         }
                         Key::Character("f") => {
                             if let Some(window) = &self.window {
@@ -118,11 +161,12 @@ impl ApplicationHandler for App {
                             }
                         }
                         Key::Character(c) => {
-                            if let Some(digit) = c.chars().next().and_then(|ch| ch.to_digit(10)) {
-                                if digit >= 1 && digit <= 9 {
-                                    self.sensitivity = digit as f32 / 5.0;
-                                    log::info!("sensitivity: {:.1}", self.sensitivity);
-                                }
+                            if let Some(digit) =
+                                c.chars().next().and_then(|ch| ch.to_digit(10))
+                                && (1..=9).contains(&digit)
+                            {
+                                self.sensitivity = digit as f32 / 5.0;
+                                log::info!("sensitivity: {:.1}", self.sensitivity);
                             }
                         }
                         _ => {}

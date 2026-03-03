@@ -53,7 +53,7 @@ impl AudioAnalyzer {
         // Split into 16 bands (logarithmic distribution)
         let mut bands = [0.0f32; 16];
         let half = magnitudes.len();
-        for i in 0..16 {
+        for (i, band) in bands.iter_mut().enumerate() {
             let start = (half as f32
                 * (2.0f32.powf(i as f32 / 16.0 * 10.0) - 1.0)
                 / 1023.0) as usize;
@@ -62,7 +62,7 @@ impl AudioAnalyzer {
                 / 1023.0) as usize;
             let start = start.min(half - 1);
             let end = end.min(half).max(start + 1);
-            bands[i] = magnitudes[start..end].iter().sum::<f32>()
+            *band = magnitudes[start..end].iter().sum::<f32>()
                 / (end - start) as f32;
         }
 
