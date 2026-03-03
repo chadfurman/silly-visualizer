@@ -296,14 +296,19 @@ fn map(p_in: vec3<f32>) -> f32 {
     rp.z = wmod(p.z + t * 0.8 * motion_gate, rep_z) - rep_z * 0.5;
 
     // ── Kaleidoscopic angular folding in XY ──
-    let fold_angle = PI / kal_folds;
-    let angle = atan2(rp.y, rp.x);
-    let folded_angle = wmod(angle, fold_angle * 2.0) - fold_angle;
-    let r_xy = length(rp.xy);
-    rp = vec3<f32>(r_xy * cos(folded_angle), r_xy * sin(folded_angle), rp.z);
+    if (i32(u.debug_flags) != 2) {
+        let fold_angle = PI / kal_folds;
+        let angle = atan2(rp.y, rp.x);
+        let folded_angle = wmod(angle, fold_angle * 2.0) - fold_angle;
+        let r_xy = length(rp.xy);
+        rp = vec3<f32>(r_xy * cos(folded_angle), r_xy * sin(folded_angle), rp.z);
+    }
 
     // ── Mandelbox-inspired folding ──
-    let fp = fold_space(rp * 0.5, fold_iters, fold_scale) * 2.0;
+    var fp = rp;
+    if (i32(u.debug_flags) != 2) {
+        fp = fold_space(rp * 0.5, fold_iters, fold_scale) * 2.0;
+    }
 
     // Audio-driven size modulation
     let geo_mod = 1.0 + geo_audio * 0.4;
@@ -392,12 +397,55 @@ fn raymarch(ro: vec3<f32>, rd: vec3<f32>) -> RayResult {
     return result;
 }
 
+// ─── Audio Bars (debug mode 4) ──────────────────────────────────────────────
+
+fn render_audio_bars(uv: vec2<f32>) -> vec3<f32> {
+    let num_bands = 16.0;
+    let bar_width = 1.0 / num_bands;
+    let band_idx = i32(floor((uv.x + 0.5) / bar_width));
+    if (band_idx < 0 || band_idx >= 16) {
+        return vec3<f32>(0.0);
+    }
+    let vec_idx = band_idx / 4;
+    let comp_idx = band_idx % 4;
+    var band_val = 0.0;
+    switch (vec_idx) {
+        case 0: {
+            switch (comp_idx) { case 0: { band_val = u.bands[0].x; } case 1: { band_val = u.bands[0].y; } case 2: { band_val = u.bands[0].z; } default: { band_val = u.bands[0].w; } }
+        }
+        case 1: {
+            switch (comp_idx) { case 0: { band_val = u.bands[1].x; } case 1: { band_val = u.bands[1].y; } case 2: { band_val = u.bands[1].z; } default: { band_val = u.bands[1].w; } }
+        }
+        case 2: {
+            switch (comp_idx) { case 0: { band_val = u.bands[2].x; } case 1: { band_val = u.bands[2].y; } case 2: { band_val = u.bands[2].z; } default: { band_val = u.bands[2].w; } }
+        }
+        default: {
+            switch (comp_idx) { case 0: { band_val = u.bands[3].x; } case 1: { band_val = u.bands[3].y; } case 2: { band_val = u.bands[3].z; } default: { band_val = u.bands[3].w; } }
+        }
+    }
+    let bar_height = band_val * 5.0;
+    let y_norm = uv.y + 0.5;
+    if (y_norm < bar_height) {
+        let hue = f32(band_idx) / 16.0;
+        return palette(hue);
+    }
+    return vec3<f32>(0.05);
+}
+
 // ─── Fragment Shader ────────────────────────────────────────────────────────
 
 @fragment
 fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let aspect = u.resolution.x / u.resolution.y;
     let uv = (pos.xy / u.resolution - 0.5) * vec2<f32>(aspect, 1.0);
+
+    let debug_mode = i32(u.debug_flags);
+
+    // Mode 4: Audio bars — pure 2D, skip all raymarching
+    if (debug_mode == 4) {
+        let bars = render_audio_bars(uv);
+        return vec4<f32>(bars, 1.0);
+    }
 
     let t = u.time;
     let bass = u.bass;
@@ -430,6 +478,24 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
     // ── Single raymarch (was 3 per pixel for chromatic aberration) ──
     let result = raymarch(ro, rd);
+
+    // Mode 3: Normals visualization
+    if (debug_mode == 3) {
+        if (result.dist < SURF_DIST * 2.0) {
+            let hit_p = ro + rd * result.total_dist;
+            let n = calc_normal(hit_p);
+            let normal_color = n * 0.5 + 0.5;
+            return vec4<f32>(normal_color, 1.0);
+        }
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+
+    // Mode 5: Depth visualization
+    if (debug_mode == 5) {
+        let depth = 1.0 - clamp(result.total_dist / MAX_DIST, 0.0, 1.0);
+        let depth_color = vec3<f32>(depth * depth);
+        return vec4<f32>(depth_color, 1.0);
+    }
 
     // ── Lighting setup ──
     let light_pos = vec3<f32>(
@@ -481,19 +547,19 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     color = mix(color, color.gbr, beat_shift);
 
     // ── Feedback: blend with previous frame for melting trail effect ──
-    // Chromatic aberration applied as screen-space UV offset on feedback sampling
-    let screen_uv = pos.xy / u.resolution;
-    let drift = vec2<f32>(sin(u.time * 0.1) * 0.003, cos(u.time * 0.13) * 0.003);
-    let ca_offset = beat * 0.015;
-    let prev_r = textureSample(prev_frame, prev_sampler, screen_uv + drift + vec2<f32>(ca_offset, 0.0)).r;
-    let prev_g = textureSample(prev_frame, prev_sampler, screen_uv + drift).g;
-    let prev_b = textureSample(prev_frame, prev_sampler, screen_uv + drift - vec2<f32>(ca_offset, 0.0)).b;
-    let prev_srgb = vec3<f32>(prev_r, prev_g, prev_b);
-    let prev_linear = pow(prev_srgb, vec3<f32>(2.2));
-    // Fade the previous frame down so trails decay instead of accumulating
-    let trail_decay = 0.55;
-    let blend_factor = 0.70 + beat * 0.20;
-    color = mix(prev_linear * trail_decay, color, blend_factor);
+    if (debug_mode != 1) {
+        let screen_uv = pos.xy / u.resolution;
+        let drift = vec2<f32>(sin(u.time * 0.1) * 0.003, cos(u.time * 0.13) * 0.003);
+        let ca_offset = beat * 0.015;
+        let prev_r = textureSample(prev_frame, prev_sampler, screen_uv + drift + vec2<f32>(ca_offset, 0.0)).r;
+        let prev_g = textureSample(prev_frame, prev_sampler, screen_uv + drift).g;
+        let prev_b = textureSample(prev_frame, prev_sampler, screen_uv + drift - vec2<f32>(ca_offset, 0.0)).b;
+        let prev_srgb = vec3<f32>(prev_r, prev_g, prev_b);
+        let prev_linear = pow(prev_srgb, vec3<f32>(2.2));
+        let trail_decay = 0.55;
+        let blend_factor = 0.70 + beat * 0.20;
+        color = mix(prev_linear * trail_decay, color, blend_factor);
+    }
 
     // ── Vignette (softer) ──
     let vignette_uv = pos.xy / u.resolution - 0.5;

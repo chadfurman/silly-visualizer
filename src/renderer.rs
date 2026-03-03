@@ -3,98 +3,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-/// WGSL uniform buffer alignment: arrays must have element stride that is a
-/// multiple of 16 bytes. We use `array<vec4<f32>, 4>` in WGSL which maps to
-/// `[f32; 16]` in Rust (same contiguous layout). The `_pad2` field aligns
-/// `bands` to a 16-byte boundary (offset 48).
-///
-/// Any changes to this struct MUST be mirrored in `shaders/visualizer.wgsl`.
-const _: () = assert!(
-    std::mem::size_of::<AudioUniforms>() == 112,
-    "AudioUniforms size must be 112 bytes to match WGSL layout"
-);
-const _: () = assert!(
-    std::mem::size_of::<AudioUniforms>() % 16 == 0,
-    "AudioUniforms size must be a multiple of 16 for uniform buffer alignment"
-);
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct AudioUniforms {
-    pub time: f32,
-    pub bass: f32,
-    pub mids: f32,
-    pub highs: f32,
-    pub energy: f32,
-    pub beat: f32,
-    pub seed: f32,
-    pub palette_id: f32,
-    pub resolution: [f32; 2],
-    pub _pad2: [f32; 2],
-    pub bands: [f32; 16],
-}
-
-impl Default for AudioUniforms {
-    fn default() -> Self {
-        Self {
-            time: 0.0,
-            bass: 0.0,
-            mids: 0.0,
-            highs: 0.0,
-            energy: 0.0,
-            beat: 0.0,
-            seed: 0.0,
-            palette_id: 0.0,
-            resolution: [0.0, 0.0],
-            _pad2: [0.0; 2],
-            bands: [0.0; 16],
-        }
-    }
-}
-
-/// GPU representation of genome parameters.
-/// Layout matches the SceneUniforms WGSL struct.
-/// Each shape slot is packed as vec4(type, scale, offset, rot_speed).
-/// Combinators packed as vec4(type0, smooth0, type1, smooth1) + vec4(type2, smooth2, pad, pad).
-/// Remaining params packed into vec4s for alignment.
-const _: () = assert!(
-    std::mem::size_of::<SceneUniforms>() == 160,
-    "SceneUniforms size must be 160 bytes to match WGSL layout"
-);
-const _: () = assert!(
-    std::mem::size_of::<SceneUniforms>() % 16 == 0,
-    "SceneUniforms size must be 16-byte aligned"
-);
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct SceneUniforms {
-    /// Shape slots packed as vec4(type, scale, offset, rot_speed) per shape
-    pub shapes: [[f32; 4]; 4],           // 64 bytes (offset 0)
-    /// Combinators: [type0, smooth0, type1, smooth1], [type2, smooth2, pad, pad]
-    pub combinators: [[f32; 4]; 2],      // 32 bytes (offset 64)
-    /// Folding: [iterations, scale, offset, rep_z]
-    pub folding: [f32; 4],               // 16 bytes (offset 96)
-    /// Camera + kal: [kaleidoscope_folds, cam_distance, orbit_speed, wobble_amount]
-    pub camera: [f32; 4],                // 16 bytes (offset 112)
-    /// Audio routing: [bass_target, mids_target, highs_target, energy_target]
-    pub audio_routing: [f32; 4],         // 16 bytes (offset 128)
-    /// Transition: [beat_target, transition_type, transition_boost, pad]
-    pub transition: [f32; 4],            // 16 bytes (offset 144)
-}
-
-impl Default for SceneUniforms {
-    fn default() -> Self {
-        Self {
-            shapes: [[0.0; 4]; 4],
-            combinators: [[0.0; 4]; 2],
-            folding: [1.0, 1.5, 0.0, 4.0],
-            camera: [4.0, 5.0, 0.2, 0.0],
-            audio_routing: [0.0; 4],
-            transition: [0.0; 4],
-        }
-    }
-}
+pub use crate::uniforms::{AudioUniforms, SceneUniforms};
 
 pub struct Renderer {
     device: wgpu::Device,
@@ -105,7 +14,6 @@ pub struct Renderer {
     uniform_buffer: wgpu::Buffer,
     scene_uniform_buffer: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
-    scene_bind_group_layout: wgpu::BindGroupLayout,
     bind_groups: [wgpu::BindGroup; 2],
     scene_bind_group: wgpu::BindGroup,
     feedback_textures: [wgpu::Texture; 2],
@@ -125,11 +33,7 @@ fn create_feedback_texture(
 ) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -154,20 +58,110 @@ fn create_bind_group(
         label: Some(label),
         layout,
         entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(prev_frame_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
+            wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(prev_frame_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
         ],
     })
+}
+
+fn create_uniform_buffer(device: &wgpu::Device, contents: &[u8], label: &str) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    })
+}
+
+fn create_sampler(device: &wgpu::Device) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("feedback sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+    })
+}
+
+fn create_scene_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("scene bind group"),
+        layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+    })
+}
+
+struct GpuResources {
+    pipeline: wgpu::RenderPipeline,
+    uniform_buf: wgpu::Buffer,
+    scene_buf: wgpu::Buffer,
+    layout: wgpu::BindGroupLayout,
+    bind_groups: [wgpu::BindGroup; 2],
+    scene_bg: wgpu::BindGroup,
+    textures: [wgpu::Texture; 2],
+    views: [wgpu::TextureView; 2],
+    sampler: wgpu::Sampler,
+}
+
+fn create_gpu_resources(ctx: &GpuContext) -> GpuResources {
+    let (w, h) = (ctx.surface_config.width, ctx.surface_config.height);
+    let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("visualizer shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/visualizer.wgsl").into()),
+    });
+    let uniform_buf = create_uniform_buffer(&ctx.device, bytemuck::cast_slice(&[AudioUniforms::default()]), "audio uniforms buffer");
+    let scene_buf = create_uniform_buffer(&ctx.device, bytemuck::cast_slice(&[SceneUniforms::default()]), "scene uniforms buffer");
+    let (ta, tb, va, vb) = create_texture_pair(&ctx.device, w, h, ctx.surface_config.format);
+    let sampler = create_sampler(&ctx.device);
+    let layout = create_audio_bind_group_layout(&ctx.device);
+    let scene_layout = create_scene_bind_group_layout(&ctx.device);
+    let scene_bg = create_scene_bind_group(&ctx.device, &scene_layout, &scene_buf);
+    let bind_groups = create_ping_pong_bind_groups(&ctx.device, &layout, &uniform_buf, &va, &vb, &sampler);
+    let pipeline = create_render_pipeline(&ctx.device, &shader, &layout, &scene_layout, ctx.surface_config.format);
+    GpuResources { pipeline, uniform_buf, scene_buf, layout, bind_groups, scene_bg, textures: [ta, tb], views: [va, vb], sampler }
+}
+
+struct GpuContext {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    surface: wgpu::Surface<'static>,
+    surface_config: wgpu::SurfaceConfiguration,
+}
+
+async fn request_adapter(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>) -> wgpu::Adapter {
+    instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: Some(surface),
+            force_fallback_adapter: false,
+        })
+        .await
+        .expect("failed to find a suitable GPU adapter")
+}
+
+async fn create_gpu_context(window: Arc<Window>) -> GpuContext {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::PRIMARY, ..Default::default()
+    });
+    let surface = instance.create_surface(window.clone()).unwrap();
+    let adapter = request_adapter(&instance, &surface).await;
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor::default()).await
+        .expect("failed to create device");
+    let size = window.inner_size();
+    let (w, h) = (size.width.max(1), size.height.max(1));
+    let mut surface_config = surface.get_default_config(&adapter, w, h)
+        .expect("surface is not supported by the adapter");
+    surface_config.usage |= wgpu::TextureUsages::COPY_DST;
+    surface.configure(&device, &surface_config);
+    GpuContext { device, queue, surface, surface_config }
 }
 
 impl Renderer {
@@ -176,509 +170,203 @@ impl Renderer {
     }
 
     async fn init(window: Arc<Window>) -> Self {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            ..Default::default()
-        });
-
-        let surface = instance.create_surface(window.clone()).unwrap();
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("failed to find a suitable GPU adapter");
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
-            .await
-            .expect("failed to create device");
-
-        let size = window.inner_size();
-        let width = size.width.max(1);
-        let height = size.height.max(1);
-
-        let mut surface_config = surface
-            .get_default_config(&adapter, width, height)
-            .expect("surface is not supported by the adapter");
-        // Need COPY_DST so we can copy from feedback textures to the surface
-        surface_config.usage |= wgpu::TextureUsages::COPY_DST;
-        surface.configure(&device, &surface_config);
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("visualizer shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/visualizer.wgsl").into(),
-            ),
-        });
-
-        // Create uniform buffer initialized with zeroed data
-        let uniforms = AudioUniforms::default();
-        let uniform_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("audio uniforms buffer"),
-                contents: bytemuck::cast_slice(&[uniforms]),
-                usage: wgpu::BufferUsages::UNIFORM
-                    | wgpu::BufferUsages::COPY_DST,
-            });
-
-        // Create scene uniform buffer (genome params) for @group(1) @binding(0)
-        let scene_uniforms = SceneUniforms::default();
-        let scene_uniform_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("scene uniforms buffer"),
-                contents: bytemuck::cast_slice(&[scene_uniforms]),
-                usage: wgpu::BufferUsages::UNIFORM
-                    | wgpu::BufferUsages::COPY_DST,
-            });
-
-        // Create feedback textures for ping-pong rendering
-        let tex_a = create_feedback_texture(
-            &device,
-            width,
-            height,
-            surface_config.format,
-            "feedback texture A",
-        );
-        let tex_b = create_feedback_texture(
-            &device,
-            width,
-            height,
-            surface_config.format,
-            "feedback texture B",
-        );
-        let view_a = tex_a.create_view(&wgpu::TextureViewDescriptor::default());
-        let view_b = tex_b.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Create sampler for previous frame sampling
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("feedback sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-
-        // Bind group layout: uniform buffer + prev frame texture + sampler
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("feedback bind group layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float {
-                                filterable: true,
-                            },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(
-                            wgpu::SamplerBindingType::Filtering,
-                        ),
-                        count: None,
-                    },
-                ],
-            });
-
-        // Scene bind group layout: genome uniform buffer at @group(1) @binding(0)
-        let scene_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("scene bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-
-        let scene_bind_group =
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("scene bind group"),
-                layout: &scene_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: scene_uniform_buffer.as_entire_binding(),
-                }],
-            });
-
-        // Two bind groups for ping-pong: each uses the OTHER texture as prev_frame
-        // bind_groups[0]: renders to tex_a, reads from tex_b (prev)
-        // bind_groups[1]: renders to tex_b, reads from tex_a (prev)
-        let bind_group_0 = create_bind_group(
-            &device,
-            &bind_group_layout,
-            &uniform_buffer,
-            &view_b,
-            &sampler,
-            "bind group 0 (prev=B)",
-        );
-        let bind_group_1 = create_bind_group(
-            &device,
-            &bind_group_layout,
-            &uniform_buffer,
-            &view_a,
-            &sampler,
-            "bind group 1 (prev=A)",
-        );
-
-        // Pipeline layout: group 0 = audio + feedback, group 1 = scene genome
-        let pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("pipeline layout"),
-                bind_group_layouts: &[&bind_group_layout, &scene_bind_group_layout],
-                immediate_size: 0,
-            });
-
-        let render_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("render pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: surface_config.format,
-                        blend: Some(wgpu::BlendState::REPLACE),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState {
-                    count: 1,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                multiview_mask: None,
-                cache: None,
-            });
-
+        let ctx = create_gpu_context(window).await;
+        let resources = create_gpu_resources(&ctx);
         Self {
-            device,
-            queue,
-            surface,
-            surface_config,
-            render_pipeline,
-            uniform_buffer,
-            scene_uniform_buffer,
-            bind_group_layout,
-            scene_bind_group_layout,
-            bind_groups: [bind_group_0, bind_group_1],
-            scene_bind_group,
-            feedback_textures: [tex_a, tex_b],
-            feedback_views: [view_a, view_b],
-            sampler,
-            frame_index: 0,
-            start_time: Instant::now(),
-            seed: 0.0,
+            device: ctx.device, queue: ctx.queue, surface: ctx.surface, surface_config: ctx.surface_config,
+            render_pipeline: resources.pipeline, uniform_buffer: resources.uniform_buf,
+            scene_uniform_buffer: resources.scene_buf, bind_group_layout: resources.layout,
+            bind_groups: resources.bind_groups, scene_bind_group: resources.scene_bg,
+            feedback_textures: resources.textures, feedback_views: resources.views,
+            sampler: resources.sampler, frame_index: 0, start_time: Instant::now(), seed: 0.0,
         }
     }
 
-    /// Current surface dimensions. Returns (0, 0) when minimized.
     pub fn surface_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if width > 0 && height > 0 {
-            self.surface_config.width = width;
-            self.surface_config.height = height;
-            self.surface.configure(&self.device, &self.surface_config);
+        if width == 0 || height == 0 { return; }
+        self.surface_config.width = width;
+        self.surface_config.height = height;
+        self.surface.configure(&self.device, &self.surface_config);
+        self.recreate_feedback_textures(width, height);
+    }
 
-            // Recreate feedback textures at new size
-            let tex_a = create_feedback_texture(
-                &self.device,
-                width,
-                height,
-                self.surface_config.format,
-                "feedback texture A",
-            );
-            let tex_b = create_feedback_texture(
-                &self.device,
-                width,
-                height,
-                self.surface_config.format,
-                "feedback texture B",
-            );
-            let view_a =
-                tex_a.create_view(&wgpu::TextureViewDescriptor::default());
-            let view_b =
-                tex_b.create_view(&wgpu::TextureViewDescriptor::default());
-
-            // Recreate bind groups with new texture views
-            self.bind_groups = [
-                create_bind_group(
-                    &self.device,
-                    &self.bind_group_layout,
-                    &self.uniform_buffer,
-                    &view_b,
-                    &self.sampler,
-                    "bind group 0 (prev=B)",
-                ),
-                create_bind_group(
-                    &self.device,
-                    &self.bind_group_layout,
-                    &self.uniform_buffer,
-                    &view_a,
-                    &self.sampler,
-                    "bind group 1 (prev=A)",
-                ),
-            ];
-
-            self.feedback_textures = [tex_a, tex_b];
-            self.feedback_views = [view_a, view_b];
-            self.frame_index = 0;
-        }
+    fn recreate_feedback_textures(&mut self, w: u32, h: u32) {
+        let (tex_a, tex_b, view_a, view_b) = create_texture_pair(&self.device, w, h, self.surface_config.format);
+        self.bind_groups = create_ping_pong_bind_groups(
+            &self.device, &self.bind_group_layout, &self.uniform_buffer, &view_a, &view_b, &self.sampler,
+        );
+        self.feedback_textures = [tex_a, tex_b];
+        self.feedback_views = [view_a, view_b];
+        self.frame_index = 0;
     }
 
     pub fn update_uniforms(&self, uniforms: &AudioUniforms) {
-        self.queue.write_buffer(
-            &self.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[*uniforms]),
-        );
+        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
     }
 
     pub fn update_scene_uniforms(&self, uniforms: &SceneUniforms) {
-        self.queue.write_buffer(
-            &self.scene_uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[*uniforms]),
-        );
+        self.queue.write_buffer(&self.scene_uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
     }
 
     pub fn randomize_seed(&mut self) {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos();
         self.seed = (nanos as f32) / 1_000_000_000.0;
         log::info!("randomized seed: {:.4}", self.seed);
     }
 
     pub fn render(&mut self, uniforms: &mut AudioUniforms) {
-        // Fill in time and resolution
-        uniforms.time = self.start_time.elapsed().as_secs_f32();
-        uniforms.seed = self.seed;
-        uniforms.resolution = [
-            self.surface_config.width as f32,
-            self.surface_config.height as f32,
-        ];
-
-        // Write uniforms to GPU
+        self.prepare_uniforms(uniforms);
         self.update_uniforms(uniforms);
-
-        let output = match self.surface.get_current_texture() {
-            Ok(tex) => tex,
-            Err(wgpu::SurfaceError::Lost) => {
-                self.surface
-                    .configure(&self.device, &self.surface_config);
-                return;
-            }
-            Err(wgpu::SurfaceError::OutOfMemory) => {
-                log::error!("out of GPU memory");
-                return;
-            }
-            Err(e) => {
-                log::warn!("surface error: {e:?}");
-                return;
-            }
-        };
-
-        // Determine which texture to render to (curr) and which is previous
-        // frame_index=0: render to tex_a, read prev from tex_b -> use bind_groups[0]
-        // frame_index=1: render to tex_b, read prev from tex_a -> use bind_groups[1]
+        let Some(output) = self.acquire_surface() else { return };
         let curr_idx = self.frame_index;
-        let curr_view = &self.feedback_views[curr_idx];
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("render encoder"),
-            });
-
-        // Pass 1: Render scene to offscreen feedback texture (with prev frame as input)
-        {
-            let mut render_pass =
-                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("offscreen render pass"),
-                    color_attachments: &[Some(
-                        wgpu::RenderPassColorAttachment {
-                            view: curr_view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 0.0,
-                                    g: 0.0,
-                                    b: 0.0,
-                                    a: 1.0,
-                                }),
-                                store: wgpu::StoreOp::Store,
-                            },
-                            depth_slice: None,
-                        },
-                    )],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.bind_groups[curr_idx], &[]);
-            render_pass.set_bind_group(1, &self.scene_bind_group, &[]);
-            render_pass.draw(0..3, 0..1);
-        }
-
-        // Copy offscreen texture to surface for display
-        let surface_texture = &output.texture;
-        encoder.copy_texture_to_texture(
-            self.feedback_textures[curr_idx].as_image_copy(),
-            surface_texture.as_image_copy(),
-            wgpu::Extent3d {
-                width: self.surface_config.width,
-                height: self.surface_config.height,
-                depth_or_array_layers: 1,
-            },
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("render encoder") },
         );
-
+        self.encode_render_pass(&mut encoder, curr_idx);
+        self.copy_to_surface(&mut encoder, &output.texture, curr_idx);
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-
-        // Swap ping-pong index for next frame
         self.frame_index = 1 - self.frame_index;
+    }
+
+    fn prepare_uniforms(&self, uniforms: &mut AudioUniforms) {
+        uniforms.time = self.start_time.elapsed().as_secs_f32();
+        uniforms.seed = self.seed;
+        uniforms.resolution = [self.surface_config.width as f32, self.surface_config.height as f32];
+    }
+
+    fn acquire_surface(&self) -> Option<wgpu::SurfaceTexture> {
+        match self.surface.get_current_texture() {
+            Ok(tex) => Some(tex),
+            Err(wgpu::SurfaceError::Lost) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                None
+            }
+            Err(wgpu::SurfaceError::OutOfMemory) => { log::error!("out of GPU memory"); None }
+            Err(e) => { log::warn!("surface error: {e:?}"); None }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // wgpu descriptor verbosity
+    fn encode_render_pass(&self, encoder: &mut wgpu::CommandEncoder, idx: usize) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("offscreen render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.feedback_views[idx],
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.render_pipeline);
+        pass.set_bind_group(0, &self.bind_groups[idx], &[]);
+        pass.set_bind_group(1, &self.scene_bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    fn copy_to_surface(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::Texture, idx: usize) {
+        encoder.copy_texture_to_texture(
+            self.feedback_textures[idx].as_image_copy(),
+            target.as_image_copy(),
+            wgpu::Extent3d { width: self.surface_config.width, height: self.surface_config.height, depth_or_array_layers: 1 },
+        );
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn create_texture_pair(
+    device: &wgpu::Device, w: u32, h: u32, format: wgpu::TextureFormat,
+) -> (wgpu::Texture, wgpu::Texture, wgpu::TextureView, wgpu::TextureView) {
+    let a = create_feedback_texture(device, w, h, format, "feedback texture A");
+    let b = create_feedback_texture(device, w, h, format, "feedback texture B");
+    let va = a.create_view(&wgpu::TextureViewDescriptor::default());
+    let vb = b.create_view(&wgpu::TextureViewDescriptor::default());
+    (a, b, va, vb)
+}
 
-    #[test]
-    fn audio_uniforms_size_is_112_bytes() {
-        assert_eq!(std::mem::size_of::<AudioUniforms>(), 112);
-    }
+fn create_ping_pong_bind_groups(
+    device: &wgpu::Device, layout: &wgpu::BindGroupLayout, buf: &wgpu::Buffer,
+    view_a: &wgpu::TextureView, view_b: &wgpu::TextureView, sampler: &wgpu::Sampler,
+) -> [wgpu::BindGroup; 2] {
+    [
+        create_bind_group(device, layout, buf, view_b, sampler, "bind group 0 (prev=B)"),
+        create_bind_group(device, layout, buf, view_a, sampler, "bind group 1 (prev=A)"),
+    ]
+}
 
-    #[test]
-    fn audio_uniforms_size_is_16_byte_aligned() {
-        assert_eq!(std::mem::size_of::<AudioUniforms>() % 16, 0);
-    }
+#[allow(clippy::too_many_lines)] // wgpu descriptor verbosity
+fn create_audio_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("feedback bind group layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
 
-    #[test]
-    fn audio_uniforms_field_offsets_match_wgsl() {
-        // These offsets must match the WGSL struct in visualizer.wgsl.
-        // If this test breaks, the shader will too.
-        use std::mem::offset_of;
-        assert_eq!(offset_of!(AudioUniforms, time), 0);
-        assert_eq!(offset_of!(AudioUniforms, bass), 4);
-        assert_eq!(offset_of!(AudioUniforms, mids), 8);
-        assert_eq!(offset_of!(AudioUniforms, highs), 12);
-        assert_eq!(offset_of!(AudioUniforms, energy), 16);
-        assert_eq!(offset_of!(AudioUniforms, beat), 20);
-        assert_eq!(offset_of!(AudioUniforms, seed), 24);
-        assert_eq!(offset_of!(AudioUniforms, palette_id), 28);
-        assert_eq!(offset_of!(AudioUniforms, resolution), 32);
-        assert_eq!(offset_of!(AudioUniforms, _pad2), 40);
-        // bands must be at offset 48 (multiple of 16) for WGSL array<vec4<f32>, 4>
-        assert_eq!(offset_of!(AudioUniforms, bands), 48);
-        assert_eq!(offset_of!(AudioUniforms, bands) % 16, 0);
-    }
+fn create_scene_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("scene bind group layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        }],
+    })
+}
 
-    #[test]
-    fn audio_uniforms_is_pod_castable() {
-        let u = AudioUniforms::default();
-        let bytes: &[u8] = bytemuck::bytes_of(&u);
-        assert_eq!(bytes.len(), 112);
-        // Verify round-trip
-        let u2: &AudioUniforms = bytemuck::from_bytes(bytes);
-        assert_eq!(u2.time, 0.0);
-        assert_eq!(u2.bands, [0.0; 16]);
-    }
-
-    #[test]
-    fn scene_uniforms_size_is_160_bytes() {
-        assert_eq!(std::mem::size_of::<SceneUniforms>(), 160);
-    }
-
-    #[test]
-    fn scene_uniforms_size_is_16_byte_aligned() {
-        assert_eq!(std::mem::size_of::<SceneUniforms>() % 16, 0);
-    }
-
-    #[test]
-    fn scene_uniforms_is_pod_castable() {
-        let s = SceneUniforms::default();
-        let bytes: &[u8] = bytemuck::bytes_of(&s);
-        assert_eq!(bytes.len(), 160);
-        let s2: &SceneUniforms = bytemuck::from_bytes(bytes);
-        assert_eq!(s2.folding, [1.0, 1.5, 0.0, 4.0]);
-    }
-
-    #[test]
-    fn scene_uniforms_field_offsets_match_wgsl() {
-        use std::mem::offset_of;
-        assert_eq!(offset_of!(SceneUniforms, shapes), 0);
-        assert_eq!(offset_of!(SceneUniforms, combinators), 64);
-        assert_eq!(offset_of!(SceneUniforms, folding), 96);
-        assert_eq!(offset_of!(SceneUniforms, camera), 112);
-        assert_eq!(offset_of!(SceneUniforms, audio_routing), 128);
-        assert_eq!(offset_of!(SceneUniforms, transition), 144);
-    }
-
-    #[test]
-    fn audio_uniforms_default_is_zeroed() {
-        let u = AudioUniforms::default();
-        assert_eq!(u.time, 0.0);
-        assert_eq!(u.bass, 0.0);
-        assert_eq!(u.mids, 0.0);
-        assert_eq!(u.highs, 0.0);
-        assert_eq!(u.energy, 0.0);
-        assert_eq!(u.beat, 0.0);
-        assert_eq!(u.seed, 0.0);
-        assert_eq!(u.resolution, [0.0, 0.0]);
-        assert_eq!(u.bands, [0.0; 16]);
-    }
+#[allow(clippy::too_many_lines)] // wgpu descriptor verbosity
+fn create_render_pipeline(
+    device: &wgpu::Device, shader: &wgpu::ShaderModule,
+    bind_group_layout: &wgpu::BindGroupLayout, scene_layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("pipeline layout"),
+        bind_group_layouts: &[bind_group_layout, scene_layout],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("render pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState { module: shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
+        fragment: Some(wgpu::FragmentState {
+            module: shader, entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::REPLACE), write_mask: wgpu::ColorWrites::ALL })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList, strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw, cull_mode: Some(wgpu::Face::Back),
+            unclipped_depth: false, polygon_mode: wgpu::PolygonMode::Fill, conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+        multiview_mask: None,
+        cache: None,
+    })
 }

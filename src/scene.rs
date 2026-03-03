@@ -1,22 +1,13 @@
 use crate::genome::Genome;
 
-/// Number of spectral profile channels (bass, mids, highs, energy, beat).
 const PROFILE_SIZE: usize = 5;
 
-/// Detects significant changes in musical "feel" by comparing a fast-moving
-/// EMA (current) against a slow-moving EMA (baseline).
 pub struct ChangeDetector {
-    /// Slow-moving exponential moving average (alpha = dt/10.0).
     baseline: [f32; PROFILE_SIZE],
-    /// Fast-moving exponential moving average (alpha = dt/2.0).
     current: [f32; PROFILE_SIZE],
-    /// Novelty threshold to trigger a scene change.
     threshold: f32,
-    /// Minimum time between triggers (seconds).
     cooldown: f32,
-    /// Time elapsed since last trigger.
     time_since_trigger: f32,
-    /// Whether the detector is primed (has enough data to trigger).
     primed: bool,
 }
 
@@ -32,37 +23,40 @@ impl ChangeDetector {
         }
     }
 
-    /// Update with a new spectral profile. Returns `true` if a significant
-    /// musical change was detected.
     pub fn update(&mut self, profile: &[f32; PROFILE_SIZE], dt: f32) -> bool {
+        self.update_emas(profile, dt);
+        self.time_since_trigger += dt;
+        if !self.primed {
+            return self.try_prime();
+        }
+        self.check_trigger()
+    }
+
+    fn update_emas(&mut self, profile: &[f32; PROFILE_SIZE], dt: f32) {
         let slow_alpha = (dt / 10.0).clamp(0.0, 1.0);
         let fast_alpha = (dt / 2.0).clamp(0.0, 1.0);
-
-        for i in 0..PROFILE_SIZE {
-            self.baseline[i] += (profile[i] - self.baseline[i]) * slow_alpha;
-            self.current[i] += (profile[i] - self.current[i]) * fast_alpha;
+        for (i, &val) in profile.iter().enumerate() {
+            self.baseline[i] += (val - self.baseline[i]) * slow_alpha;
+            self.current[i] += (val - self.current[i]) * fast_alpha;
         }
+    }
 
-        self.time_since_trigger += dt;
-
-        // Need some warmup time before we can detect changes
-        if !self.primed {
-            if self.time_since_trigger > self.cooldown {
-                self.primed = true;
-            }
-            return false;
+    fn try_prime(&mut self) -> bool {
+        if self.time_since_trigger > self.cooldown {
+            self.primed = true;
         }
-
-        let novelty = self.novelty();
-        if novelty > self.threshold && self.time_since_trigger >= self.cooldown {
-            self.time_since_trigger = 0.0;
-            return true;
-        }
-
         false
     }
 
-    /// Euclidean distance between current (fast EMA) and baseline (slow EMA).
+    fn check_trigger(&mut self) -> bool {
+        let trigger = self.novelty() > self.threshold
+            && self.time_since_trigger >= self.cooldown;
+        if trigger {
+            self.time_since_trigger = 0.0;
+        }
+        trigger
+    }
+
     pub fn novelty(&self) -> f32 {
         let mut sum_sq = 0.0f32;
         for i in 0..PROFILE_SIZE {
@@ -72,7 +66,7 @@ impl ChangeDetector {
         sum_sq.sqrt()
     }
 
-    /// Reset the detector state.
+    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.baseline = [0.0; PROFILE_SIZE];
         self.current = [0.0; PROFILE_SIZE];
@@ -81,19 +75,14 @@ impl ChangeDetector {
     }
 }
 
-/// Crossfade transition mode between scenes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CrossfadeMode {
-    /// Pure parameter interpolation (4 seconds).
     ParamInterpolation,
-    /// Feedback-based melt effect (2.5 seconds).
     FeedbackMelt,
-    /// Both interpolation and melt (4 seconds).
     Both,
 }
 
 impl CrossfadeMode {
-    /// Map a genome's transition_type f32 value to a mode.
     pub fn from_genome_value(v: f32) -> Self {
         match v as u32 {
             0 => CrossfadeMode::ParamInterpolation,
@@ -102,7 +91,6 @@ impl CrossfadeMode {
         }
     }
 
-    /// Duration of the crossfade in seconds.
     pub fn duration(&self) -> f32 {
         match self {
             CrossfadeMode::ParamInterpolation => 4.0,
@@ -112,8 +100,8 @@ impl CrossfadeMode {
     }
 }
 
-/// Manages an active crossfade between two genomes.
 pub struct Crossfade {
+    #[allow(dead_code)]
     pub mode: CrossfadeMode,
     pub from: Genome,
     pub to: Genome,
@@ -122,35 +110,25 @@ pub struct Crossfade {
 }
 
 impl Crossfade {
-    /// Create a new crossfade transition.
     pub fn new(from: Genome, to: Genome, mode: CrossfadeMode) -> Self {
         let duration = mode.duration();
-        Self {
-            mode,
-            from,
-            to,
-            progress: 0.0,
-            duration,
-        }
+        Self { mode, from, to, progress: 0.0, duration }
     }
 
-    /// Advance the crossfade by `dt` seconds. Returns `true` when complete.
     pub fn advance(&mut self, dt: f32) -> bool {
         self.progress += dt / self.duration;
         if self.progress >= 1.0 {
             self.progress = 1.0;
-            true
-        } else {
-            false
+            return true;
         }
+        false
     }
 
-    /// Get the interpolated genome at the current progress.
     pub fn current_genome(&self) -> Genome {
         self.from.lerp(&self.to, self.progress)
     }
 
-    /// Whether the feedback/melt effect should be boosted during this crossfade.
+    #[allow(dead_code)]
     pub fn boost_feedback(&self) -> bool {
         matches!(self.mode, CrossfadeMode::FeedbackMelt | CrossfadeMode::Both)
     }
@@ -169,8 +147,7 @@ mod tests {
     #[test]
     fn change_detector_does_not_trigger_initially() {
         let mut det = ChangeDetector::new(0.1, 2.0);
-        let profile = [0.5, 0.5, 0.5, 0.5, 0.5];
-        // Even with data, should not trigger until primed (after cooldown)
+        let profile = [0.5; 5];
         assert!(!det.update(&profile, 0.016));
         assert!(!det.update(&profile, 0.016));
     }
@@ -178,16 +155,11 @@ mod tests {
     #[test]
     fn change_detector_triggers_on_large_shift() {
         let mut det = ChangeDetector::new(0.05, 1.0);
-
-        // Feed steady signal to prime
         let steady = [0.2, 0.2, 0.2, 0.2, 0.0];
         for _ in 0..200 {
             det.update(&steady, 0.016);
         }
-
-        // Now shift dramatically
         let shifted = [0.9, 0.9, 0.9, 0.9, 1.0];
-        // Feed shifted signal enough times for the fast EMA to catch up
         let mut triggered = false;
         for _ in 0..100 {
             if det.update(&shifted, 0.016) {
@@ -195,84 +167,68 @@ mod tests {
                 break;
             }
         }
-        assert!(triggered, "should trigger on large spectral shift");
+        assert!(triggered);
     }
 
     #[test]
     fn change_detector_respects_cooldown() {
         let mut det = ChangeDetector::new(0.05, 5.0);
-
-        // Prime
-        let steady = [0.2, 0.2, 0.2, 0.2, 0.0];
+        let steady = [0.2; 5];
         for _ in 0..500 {
             det.update(&steady, 0.016);
         }
-
-        // Trigger once
         let shifted = [0.9, 0.9, 0.9, 0.9, 1.0];
-        let mut first_trigger = false;
+        let mut first = false;
         for _ in 0..200 {
-            if det.update(&shifted, 0.016) {
-                first_trigger = true;
-                break;
-            }
+            if det.update(&shifted, 0.016) { first = true; break; }
         }
-        assert!(first_trigger, "first trigger should happen");
-
-        // Immediately try another shift — should be blocked by cooldown
-        let shifted2 = [0.1, 0.1, 0.1, 0.1, 0.0];
-        // Only advance a tiny bit (well within 5s cooldown)
-        let mut second_trigger = false;
+        assert!(first);
+        let shifted2 = [0.1; 5];
+        let mut second = false;
         for _ in 0..10 {
-            if det.update(&shifted2, 0.016) {
-                second_trigger = true;
-                break;
-            }
+            if det.update(&shifted2, 0.016) { second = true; break; }
         }
-        assert!(
-            !second_trigger,
-            "second trigger should be blocked by cooldown"
-        );
+        assert!(!second);
     }
 
     #[test]
     fn change_detector_does_not_trigger_on_steady_signal() {
-        // Use a higher threshold so the initial ramp-up from [0;5] to steady
-        // doesn't exceed it. The key insight: a truly steady signal should
-        // converge both EMAs and never trigger after warmup.
         let mut det = ChangeDetector::new(0.5, 1.0);
-        let steady = [0.3, 0.3, 0.3, 0.3, 0.3];
-
+        let steady = [0.3; 5];
         let mut triggered = false;
         for _ in 0..2000 {
-            if det.update(&steady, 0.016) {
-                triggered = true;
-                break;
-            }
+            if det.update(&steady, 0.016) { triggered = true; break; }
         }
-        assert!(
-            !triggered,
-            "should not trigger on perfectly steady signal"
-        );
+        assert!(!triggered);
     }
 
     #[test]
     fn novelty_is_zero_when_equal() {
-        let mut det = ChangeDetector::new(0.1, 1.0);
-        // Both baseline and current start at zero
+        let det = ChangeDetector::new(0.1, 1.0);
         assert_eq!(det.novelty(), 0.0);
+    }
 
-        // Feed a steady signal for a long time — both EMAs should converge
-        let signal = [0.3, 0.3, 0.3, 0.3, 0.3];
+    #[test]
+    fn novelty_converges_on_steady_input() {
+        let mut det = ChangeDetector::new(0.1, 1.0);
+        let signal = [0.3; 5];
         for _ in 0..10000 {
             det.update(&signal, 0.1);
         }
-        // After convergence, novelty should be very close to zero
-        assert!(
-            det.novelty() < 0.001,
-            "novelty should be ~0 after convergence, got {}",
-            det.novelty()
-        );
+        assert!(det.novelty() < 0.001);
+    }
+
+    #[test]
+    fn reset_clears_state() {
+        let mut det = ChangeDetector::new(0.1, 1.0);
+        let signal = [0.5; 5];
+        for _ in 0..100 {
+            det.update(&signal, 0.1);
+        }
+        det.reset();
+        assert_eq!(det.novelty(), 0.0);
+        assert!(!det.primed);
+        assert_eq!(det.time_since_trigger, 0.0);
     }
 
     #[test]
@@ -281,24 +237,13 @@ mod tests {
         let from = Genome::random(&mut rng);
         let to = Genome::random(&mut rng);
         let mut cf = Crossfade::new(from, to, CrossfadeMode::ParamInterpolation);
-
-        // 4s duration, advance in 0.1s steps. Due to floating point
-        // accumulation, expect ~40-41 steps.
         let mut steps = 0;
         loop {
             steps += 1;
-            if cf.advance(0.1) {
-                break;
-            }
-            if steps > 100 {
-                panic!("crossfade did not complete");
-            }
+            if cf.advance(0.1) { break; }
+            if steps > 100 { panic!("crossfade did not complete"); }
         }
-        // Should take approximately 40 steps (4.0 / 0.1), allow +-1 for float accumulation
-        assert!(
-            (39..=41).contains(&steps),
-            "should complete in ~40 steps, got {steps}"
-        );
+        assert!((39..=41).contains(&steps));
         assert_eq!(cf.progress, 1.0);
     }
 
@@ -308,26 +253,15 @@ mod tests {
         let from = Genome::random(&mut rng);
         let to = Genome::random(&mut rng);
         let cf = Crossfade::new(from.clone(), to, CrossfadeMode::ParamInterpolation);
-
-        // progress is 0.0 initially
-        let current = cf.current_genome();
-        assert_eq!(current, from);
+        assert_eq!(cf.current_genome(), from);
     }
 
     #[test]
     fn crossfade_mode_from_genome_value() {
-        assert_eq!(
-            CrossfadeMode::from_genome_value(0.0),
-            CrossfadeMode::ParamInterpolation
-        );
-        assert_eq!(
-            CrossfadeMode::from_genome_value(1.0),
-            CrossfadeMode::FeedbackMelt
-        );
-        assert_eq!(
-            CrossfadeMode::from_genome_value(2.0),
-            CrossfadeMode::Both
-        );
+        assert_eq!(CrossfadeMode::from_genome_value(0.0), CrossfadeMode::ParamInterpolation);
+        assert_eq!(CrossfadeMode::from_genome_value(1.0), CrossfadeMode::FeedbackMelt);
+        assert_eq!(CrossfadeMode::from_genome_value(2.0), CrossfadeMode::Both);
+        assert_eq!(CrossfadeMode::from_genome_value(99.0), CrossfadeMode::Both);
     }
 
     #[test]
@@ -342,15 +276,22 @@ mod tests {
         let mut rng = test_rng();
         let from = Genome::random(&mut rng);
         let to = Genome::random(&mut rng);
+        let cf = Crossfade::new(from.clone(), to.clone(), CrossfadeMode::ParamInterpolation);
+        assert!(!cf.boost_feedback());
+        let cf = Crossfade::new(from.clone(), to.clone(), CrossfadeMode::FeedbackMelt);
+        assert!(cf.boost_feedback());
+        let cf = Crossfade::new(from, to, CrossfadeMode::Both);
+        assert!(cf.boost_feedback());
+    }
 
-        let cf_interp =
-            Crossfade::new(from.clone(), to.clone(), CrossfadeMode::ParamInterpolation);
-        assert!(!cf_interp.boost_feedback());
-
-        let cf_melt = Crossfade::new(from.clone(), to.clone(), CrossfadeMode::FeedbackMelt);
-        assert!(cf_melt.boost_feedback());
-
-        let cf_both = Crossfade::new(from, to, CrossfadeMode::Both);
-        assert!(cf_both.boost_feedback());
+    #[test]
+    fn crossfade_advance_returns_false_before_done() {
+        let mut rng = test_rng();
+        let from = Genome::random(&mut rng);
+        let to = Genome::random(&mut rng);
+        let mut cf = Crossfade::new(from, to, CrossfadeMode::ParamInterpolation);
+        assert!(!cf.advance(0.1));
+        assert!(cf.progress > 0.0);
+        assert!(cf.progress < 1.0);
     }
 }

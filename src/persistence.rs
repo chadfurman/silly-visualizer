@@ -86,34 +86,32 @@ pub fn save_favorite(genome: &Genome) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Load a random favorite genome from ~/.silly-visualizer/favorites/
 pub fn load_random_favorite() -> Result<Option<Genome>, String> {
     let dir = favorites_dir().ok_or("could not determine favorites directory")?;
-    let entries: Vec<PathBuf> = fs::read_dir(&dir)
-        .map_err(|e| format!("failed to read favorites dir: {e}"))?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
-
+    let entries = list_json_files(&dir)?;
     if entries.is_empty() {
         return Ok(None);
     }
-
     let mut rng = rand::rng();
-    let idx = rng.random_range(0..entries.len());
-    let path = &entries[idx];
-    let json =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    let genome: Genome =
-        serde_json::from_str(&json).map_err(|e| format!("failed to deserialize favorite: {e}"))?;
-    Ok(Some(genome))
+    let path = &entries[rng.random_range(0..entries.len())];
+    load_genome_from_file(path).map(Some)
+}
+
+fn list_json_files(dir: &PathBuf) -> Result<Vec<PathBuf>, String> {
+    Ok(fs::read_dir(dir)
+        .map_err(|e| format!("failed to read favorites dir: {e}"))?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            (path.extension()?.to_str()? == "json").then_some(path)
+        })
+        .collect())
+}
+
+fn load_genome_from_file(path: &PathBuf) -> Result<Genome, String> {
+    let json = fs::read_to_string(path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    serde_json::from_str(&json)
+        .map_err(|e| format!("failed to deserialize favorite: {e}"))
 }
 
 #[cfg(test)]
@@ -166,31 +164,13 @@ mod tests {
     }
 
     fn load_random_favorite_from(dir: &PathBuf) -> Result<Option<Genome>, String> {
-        let entries: Vec<PathBuf> = fs::read_dir(dir)
-            .map_err(|e| format!("failed to read favorites dir: {e}"))?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
+        let entries = list_json_files(dir)?;
         if entries.is_empty() {
             return Ok(None);
         }
-
         let mut rng = rand::rng();
-        let idx = rng.random_range(0..entries.len());
-        let path = &entries[idx];
-        let json = fs::read_to_string(path)
-            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-        let genome: Genome = serde_json::from_str(&json)
-            .map_err(|e| format!("failed to deserialize favorite: {e}"))?;
-        Ok(Some(genome))
+        let path = &entries[rng.random_range(0..entries.len())];
+        load_genome_from_file(path).map(Some)
     }
 
     #[test]
