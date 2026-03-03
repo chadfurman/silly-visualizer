@@ -16,6 +16,17 @@ struct AudioUniforms {
 @group(0) @binding(1) var prev_frame: texture_2d<f32>;
 @group(0) @binding(2) var prev_sampler: sampler;
 
+struct SceneUniforms {
+    shapes: array<vec4<f32>, 4>,
+    combinators: array<vec4<f32>, 2>,
+    folding: vec4<f32>,
+    camera: vec4<f32>,
+    audio_routing: vec4<f32>,
+    transition: vec4<f32>,
+}
+
+@group(1) @binding(0) var<uniform> scene: SceneUniforms;
+
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
     var pos = array<vec2<f32>, 3>(
@@ -220,74 +231,102 @@ fn fold_space(p_in: vec3<f32>, iterations: i32, scale: f32) -> vec3<f32> {
     return p;
 }
 
+// ─── Genome-driven dispatch ─────────────────────────────────────────────────
+
+// Evaluate an SDF primitive by type: 0=off, 1=sphere, 2=torus, 3=octahedron, 4=box
+fn eval_shape(p: vec3<f32>, shape_type: f32, scale: f32) -> f32 {
+    let st = i32(shape_type);
+    switch (st) {
+        case 1: { return sd_sphere(p, scale); }
+        case 2: { return sd_torus(p, vec2<f32>(scale, scale * 0.3)); }
+        case 3: { return sd_octahedron(p, scale); }
+        case 4: { return sd_box(p, vec3<f32>(scale)); }
+        default: { return MAX_DIST; }
+    }
+}
+
+// Dispatch combinator by type: 0=union, 1=subtraction, 2=intersection
+fn combine(d1: f32, d2: f32, comb_type: f32, smoothness: f32) -> f32 {
+    let ct = i32(comb_type);
+    switch (ct) {
+        case 1: { return smooth_subtraction(d1, d2, smoothness); }
+        case 2: { return smooth_intersection(d1, d2, smoothness); }
+        default: { return smooth_union(d1, d2, smoothness); }
+    }
+}
+
+// Returns total audio contribution routed to a given target
+// Targets: 0=geometry, 1=camera, 2=color
+fn audio_for_target(target: f32) -> f32 {
+    var total = 0.0;
+    if (abs(scene.audio_routing.x - target) < 0.5) { total += u.bass; }
+    if (abs(scene.audio_routing.y - target) < 0.5) { total += u.mids; }
+    if (abs(scene.audio_routing.z - target) < 0.5) { total += u.highs; }
+    if (abs(scene.audio_routing.w - target) < 0.5) { total += u.energy; }
+    if (abs(scene.transition.x - target) < 0.5) { total += u.beat; }
+    return total;
+}
+
 // ─── Scene SDF ──────────────────────────────────────────────────────────────
 
 fn map(p_in: vec3<f32>) -> f32 {
     let t = u.time;
-    let bass = u.bass;
-    let mids = u.mids;
-    let highs = u.highs;
-    let energy = u.energy;
 
-    // Combined audio level — use the loudest band so speech (mids-dominant)
-    // drives geometry just as well as music (bass-dominant)
-    let audio_level = max(max(bass, mids), max(highs, energy));
-
-    // Motion and presence scale with audio — silence = void
+    // Global audio level for fundamental behaviors (motion gate, presence)
+    let audio_level = max(max(u.bass, u.mids), max(u.highs, u.energy));
     let motion_gate = clamp(audio_level * 8.0, 0.05, 1.0);
 
-    // Rotation driven by time, gated by audio
-    let rot_speed = (0.1 + mids * 0.3) * motion_gate;
+    // Audio routed to geometry modulation via genome
+    let geo_audio = audio_for_target(0.0);
+
+    // Genome-driven structural params
+    let rep_z = scene.folding.w - geo_audio * 0.5;
+    let kal_folds = max(scene.camera.x, 2.0);
+    let fold_iters = i32(clamp(scene.folding.x, 1.0, 5.0));
+    let fold_scale = scene.folding.y + geo_audio * 0.3;
+
+    // Rotation: average rot_speed from active shapes, gated by audio
+    let avg_rot = (scene.shapes[0].w + scene.shapes[1].w) * 0.5;
+    let rot_speed = (avg_rot + geo_audio * 0.3) * motion_gate;
     var p = rot_y(t * rot_speed * 0.4) * rot_x(t * rot_speed * 0.25) * p_in;
 
-    // ── Space repetition: infinite tunnel / kaleidoscopic ──
-    let rep_z = 4.0 - audio_level * 0.3;
+    // ── Space repetition along Z ──
     var rp = p;
     rp.z = wmod(p.z + t * 0.8 * motion_gate, rep_z) - rep_z * 0.5;
 
-    // Kaleidoscopic angular folding in XY
-    let fold_angle = PI / (3.0 + mids * 0.8);
+    // ── Kaleidoscopic angular folding in XY ──
+    let fold_angle = PI / kal_folds;
     let angle = atan2(rp.y, rp.x);
     let folded_angle = wmod(angle, fold_angle * 2.0) - fold_angle;
     let r_xy = length(rp.xy);
     rp = vec3<f32>(r_xy * cos(folded_angle), r_xy * sin(folded_angle), rp.z);
 
-    // ── Iterative space folding (Mandelbox-like) ──
-    let fold_iters = i32(clamp(1.0 + audio_level * 3.0, 1.0, 4.0));
-    let fold_scale = 1.5 + audio_level * 0.4;
+    // ── Mandelbox-inspired folding ──
     let fp = fold_space(rp * 0.5, fold_iters, fold_scale) * 2.0;
 
-    // ── Primary shape: morph between torus and octahedron ──
-    // audio_level drives shape size so speech (mids) inflates geometry too
-    let morph = 0.5 + 0.5 * sin(t * 0.6 * motion_gate + audio_level * 0.8);
-    let geo_scale = 1.0 + audio_level * 0.4;
+    // Audio-driven size modulation
+    let geo_mod = 1.0 + geo_audio * 0.4;
 
-    let torus_r = vec2<f32>(1.2 * geo_scale, 0.3 + audio_level * 0.12);
-    let d_torus = sd_torus(rp, torus_r);
-    let d_octa = sd_octahedron(rp, 1.0 * geo_scale);
-    let d_primary = mix(d_torus, d_octa, morph);
+    // ── Evaluate 4 genome-defined shape slots ──
+    // Shapes 0-1 in repeated space, shapes 2-3 in folded space
+    let d0 = eval_shape(rp + vec3<f32>(0.0, scene.shapes[0].z, 0.0),
+                        scene.shapes[0].x, scene.shapes[0].y * geo_mod);
+    let d1 = eval_shape(rp + vec3<f32>(0.0, scene.shapes[1].z, 0.0),
+                        scene.shapes[1].x, scene.shapes[1].y * geo_mod);
+    let d2 = eval_shape(fp + vec3<f32>(0.0, scene.shapes[2].z, 0.0),
+                        scene.shapes[2].x, scene.shapes[2].y * geo_mod);
+    let d3 = eval_shape(fp + vec3<f32>(0.0, scene.shapes[3].z, 0.0),
+                        scene.shapes[3].x, scene.shapes[3].y * geo_mod);
 
-    // ── Secondary shapes from folded space ──
-    let d_folded_sphere = sd_sphere(fp, 0.8 + highs * 0.2 + mids * 0.15);
-    let d_folded_box = sd_box(fp, vec3<f32>(0.5 + mids * 0.2));
-    let d_secondary = smooth_union(d_folded_sphere, d_folded_box, 0.5);
+    // ── Combine shapes using genome combinators ──
+    var d = combine(d0, d1, scene.combinators[0].x,
+                    scene.combinators[0].y + geo_audio * 0.1);
+    d = combine(d, d2, scene.combinators[0].z,
+                scene.combinators[0].w + geo_audio * 0.1);
+    d = combine(d, d3, scene.combinators[1].x,
+                scene.combinators[1].y + geo_audio * 0.1);
 
-    // ── Combine primary and secondary ──
-    var d = smooth_union(d_primary, d_secondary * 0.6, 0.8 + audio_level * 0.2);
-
-    // ── Carved detail: subtract rotating octahedra ──
-    let carve_p = rot_z(t * 1.2 * motion_gate + mids * 0.5) * rp;
-    let d_carve = sd_octahedron(carve_p, 0.6 + highs * 0.2);
-    d = smooth_subtraction(d_carve, d, 0.3 + energy * 0.08);
-
-    // ── Add pulsing spheres at tunnel repetitions ──
-    let pulse = 0.3 + 0.15 * sin(t * 2.0 * motion_gate + audio_level * PI);
-    let sp = p;
-    let srp_z = wmod(sp.z + t * 0.8 * motion_gate, rep_z) - rep_z * 0.5;
-    let d_pulse = sd_sphere(vec3<f32>(sp.x, sp.y, srp_z), pulse);
-    d = smooth_union(d, d_pulse, 0.6);
-
-    // Fade geometry to empty space when silent — no input = void
+    // Fade geometry to void when silent
     let presence = clamp(audio_level * 15.0, 0.0, 1.0);
     return d + (1.0 - presence) * 15.0;
 }
@@ -366,14 +405,14 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let energy = u.energy;
     let beat = u.beat;
 
-    // ── Camera setup: orbiting camera ──
-    // Use max audio band for motion so speech drives camera too
+    // ── Camera setup: genome-driven orbiting camera ──
     let audio_peak = max(max(bass, mids), max(highs, energy));
     let motion = clamp(audio_peak * 8.0, 0.05, 1.0);
+    let cam_audio = audio_for_target(1.0);
     let seed = u.seed;
-    let cam_dist = 5.0 - audio_peak * 0.3;
-    let cam_angle_y = t * 0.2 * motion + mids * 0.15;
-    let cam_angle_x = sin(t * 0.15) * 0.3 * motion;
+    let cam_dist = scene.camera.y - cam_audio * 0.3;
+    let cam_angle_y = t * scene.camera.z * motion + cam_audio * 0.15;
+    let cam_angle_x = sin(t * 0.15) * scene.camera.w * motion;
     var ro = vec3<f32>(
         cam_dist * sin(cam_angle_y) * cos(cam_angle_x),
         cam_dist * sin(cam_angle_x) + sin(t * 0.3) * 0.3 * motion,
@@ -398,7 +437,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         cos(t * 0.7) * 2.0,
     );
 
-    // ── Coloring: shade full RGB from single raymarch ──
+    // ── Coloring: genome-routed audio drives color modulation ──
+    let color_audio = audio_for_target(2.0);
     var color = vec3<f32>(0.0);
 
     if (result.dist < SURF_DIST * 2.0) {
@@ -406,27 +446,27 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         let n = calc_normal(hit_p);
         let base_color = palette_shifted(
             result.total_dist * 0.15 + t * 0.08 + dot(n, vec3<f32>(0.3, 0.6, 0.1)),
-            bass * 0.6 + beat * 0.4
+            color_audio * 0.6 + beat * 0.4
         );
         let light_dir = normalize(light_pos - hit_p);
         let diff = max(dot(n, light_dir), 0.0);
-        let spec = pow(max(dot(reflect(-light_dir, n), -rd), 0.0), 16.0 + highs * 32.0);
+        let spec = pow(max(dot(reflect(-light_dir, n), -rd), 0.0), 16.0 + color_audio * 32.0);
         let luminance = dot(base_color, vec3<f32>(0.299, 0.587, 0.114));
-        let saturated = mix(vec3<f32>(luminance), base_color, 1.2 + mids * 0.8);
-        let brightness = 1.0 + highs * 0.5;
-        let lit = saturated * (0.25 + diff * 0.75) + spec * 0.5 * (1.0 + highs * 2.0);
+        let saturated = mix(vec3<f32>(luminance), base_color, 1.2 + color_audio * 0.8);
+        let brightness = 1.0 + color_audio * 0.5;
+        let lit = saturated * (0.25 + diff * 0.75) + spec * 0.5 * (1.0 + color_audio * 2.0);
         let fog = exp(-result.total_dist * 0.05);
         color = lit * brightness * fog;
     }
 
     // ── Glow from close misses ──
     let glow_intensity = 0.03 / (result.closest + 0.01);
-    let glow_color = palette(t * 0.1 + result.total_dist * 0.05 + bass);
-    var glow = glow_color * glow_intensity * (0.4 + highs * 1.5);
+    let glow_color = palette(t * 0.1 + result.total_dist * 0.05 + color_audio);
+    var glow = glow_color * glow_intensity * (0.4 + color_audio * 1.5);
 
     // Step-based ambient glow (more steps = ray was grazing surfaces)
     let step_glow = f32(result.steps) / f32(MAX_STEPS);
-    let step_color = palette_shifted(step_glow + t * 0.02, bass * 0.8);
+    let step_color = palette_shifted(step_glow + t * 0.02, color_audio * 0.8);
     glow = glow + step_color * step_glow * step_glow * 0.6;
 
     color = color + glow;

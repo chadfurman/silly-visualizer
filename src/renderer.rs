@@ -52,6 +52,50 @@ impl Default for AudioUniforms {
     }
 }
 
+/// GPU representation of genome parameters.
+/// Layout matches the SceneUniforms WGSL struct.
+/// Each shape slot is packed as vec4(type, scale, offset, rot_speed).
+/// Combinators packed as vec4(type0, smooth0, type1, smooth1) + vec4(type2, smooth2, pad, pad).
+/// Remaining params packed into vec4s for alignment.
+const _: () = assert!(
+    std::mem::size_of::<SceneUniforms>() == 160,
+    "SceneUniforms size must be 160 bytes to match WGSL layout"
+);
+const _: () = assert!(
+    std::mem::size_of::<SceneUniforms>() % 16 == 0,
+    "SceneUniforms size must be 16-byte aligned"
+);
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SceneUniforms {
+    /// Shape slots packed as vec4(type, scale, offset, rot_speed) per shape
+    pub shapes: [[f32; 4]; 4],           // 64 bytes (offset 0)
+    /// Combinators: [type0, smooth0, type1, smooth1], [type2, smooth2, pad, pad]
+    pub combinators: [[f32; 4]; 2],      // 32 bytes (offset 64)
+    /// Folding: [iterations, scale, offset, rep_z]
+    pub folding: [f32; 4],               // 16 bytes (offset 96)
+    /// Camera + kal: [kaleidoscope_folds, cam_distance, orbit_speed, wobble_amount]
+    pub camera: [f32; 4],                // 16 bytes (offset 112)
+    /// Audio routing: [bass_target, mids_target, highs_target, energy_target]
+    pub audio_routing: [f32; 4],         // 16 bytes (offset 128)
+    /// Transition: [beat_target, transition_type, transition_boost, pad]
+    pub transition: [f32; 4],            // 16 bytes (offset 144)
+}
+
+impl Default for SceneUniforms {
+    fn default() -> Self {
+        Self {
+            shapes: [[0.0; 4]; 4],
+            combinators: [[0.0; 4]; 2],
+            folding: [1.0, 1.5, 0.0, 4.0],
+            camera: [4.0, 5.0, 0.2, 0.0],
+            audio_routing: [0.0; 4],
+            transition: [0.0; 4],
+        }
+    }
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -59,8 +103,11 @@ pub struct Renderer {
     surface_config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
+    scene_uniform_buffer: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
+    scene_bind_group_layout: wgpu::BindGroupLayout,
     bind_groups: [wgpu::BindGroup; 2],
+    scene_bind_group: wgpu::BindGroup,
     feedback_textures: [wgpu::Texture; 2],
     feedback_views: [wgpu::TextureView; 2],
     sampler: wgpu::Sampler,
@@ -178,6 +225,16 @@ impl Renderer {
                     | wgpu::BufferUsages::COPY_DST,
             });
 
+        // Create scene uniform buffer (genome params) for @group(1) @binding(0)
+        let scene_uniforms = SceneUniforms::default();
+        let scene_uniform_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("scene uniforms buffer"),
+                contents: bytemuck::cast_slice(&[scene_uniforms]),
+                usage: wgpu::BufferUsages::UNIFORM
+                    | wgpu::BufferUsages::COPY_DST,
+            });
+
         // Create feedback textures for ping-pong rendering
         let tex_a = create_feedback_texture(
             &device,
@@ -246,6 +303,32 @@ impl Renderer {
                 ],
             });
 
+        // Scene bind group layout: genome uniform buffer at @group(1) @binding(0)
+        let scene_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("scene bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let scene_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("scene bind group"),
+                layout: &scene_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: scene_uniform_buffer.as_entire_binding(),
+                }],
+            });
+
         // Two bind groups for ping-pong: each uses the OTHER texture as prev_frame
         // bind_groups[0]: renders to tex_a, reads from tex_b (prev)
         // bind_groups[1]: renders to tex_b, reads from tex_a (prev)
@@ -266,11 +349,11 @@ impl Renderer {
             "bind group 1 (prev=A)",
         );
 
-        // Pipeline layout now includes our bind group layout
+        // Pipeline layout: group 0 = audio + feedback, group 1 = scene genome
         let pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("pipeline layout"),
-                bind_group_layouts: &[&bind_group_layout],
+                bind_group_layouts: &[&bind_group_layout, &scene_bind_group_layout],
                 immediate_size: 0,
             });
 
@@ -320,8 +403,11 @@ impl Renderer {
             surface_config,
             render_pipeline,
             uniform_buffer,
+            scene_uniform_buffer,
             bind_group_layout,
+            scene_bind_group_layout,
             bind_groups: [bind_group_0, bind_group_1],
+            scene_bind_group,
             feedback_textures: [tex_a, tex_b],
             feedback_views: [view_a, view_b],
             sampler,
@@ -391,6 +477,14 @@ impl Renderer {
     pub fn update_uniforms(&self, uniforms: &AudioUniforms) {
         self.queue.write_buffer(
             &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[*uniforms]),
+        );
+    }
+
+    pub fn update_scene_uniforms(&self, uniforms: &SceneUniforms) {
+        self.queue.write_buffer(
+            &self.scene_uniform_buffer,
             0,
             bytemuck::cast_slice(&[*uniforms]),
         );
@@ -475,6 +569,7 @@ impl Renderer {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.bind_groups[curr_idx], &[]);
+            render_pass.set_bind_group(1, &self.scene_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         }
 
@@ -541,6 +636,36 @@ mod tests {
         let u2: &AudioUniforms = bytemuck::from_bytes(bytes);
         assert_eq!(u2.time, 0.0);
         assert_eq!(u2.bands, [0.0; 16]);
+    }
+
+    #[test]
+    fn scene_uniforms_size_is_160_bytes() {
+        assert_eq!(std::mem::size_of::<SceneUniforms>(), 160);
+    }
+
+    #[test]
+    fn scene_uniforms_size_is_16_byte_aligned() {
+        assert_eq!(std::mem::size_of::<SceneUniforms>() % 16, 0);
+    }
+
+    #[test]
+    fn scene_uniforms_is_pod_castable() {
+        let s = SceneUniforms::default();
+        let bytes: &[u8] = bytemuck::bytes_of(&s);
+        assert_eq!(bytes.len(), 160);
+        let s2: &SceneUniforms = bytemuck::from_bytes(bytes);
+        assert_eq!(s2.folding, [1.0, 1.5, 0.0, 4.0]);
+    }
+
+    #[test]
+    fn scene_uniforms_field_offsets_match_wgsl() {
+        use std::mem::offset_of;
+        assert_eq!(offset_of!(SceneUniforms, shapes), 0);
+        assert_eq!(offset_of!(SceneUniforms, combinators), 64);
+        assert_eq!(offset_of!(SceneUniforms, folding), 96);
+        assert_eq!(offset_of!(SceneUniforms, camera), 112);
+        assert_eq!(offset_of!(SceneUniforms, audio_routing), 128);
+        assert_eq!(offset_of!(SceneUniforms, transition), 144);
     }
 
     #[test]

@@ -84,6 +84,24 @@ pub struct Genome {
 }
 
 impl Genome {
+    /// Convert to GPU-friendly SceneUniforms layout.
+    pub fn to_uniforms(&self) -> crate::renderer::SceneUniforms {
+        crate::renderer::SceneUniforms {
+            shapes: std::array::from_fn(|i| {
+                [self.shape_types[i], self.shape_scales[i], self.shape_offsets[i], self.shape_rot_speeds[i]]
+            }),
+            combinators: [
+                [self.combinator_types[0], self.combinator_smoothness[0],
+                 self.combinator_types[1], self.combinator_smoothness[1]],
+                [self.combinator_types[2], self.combinator_smoothness[2], 0.0, 0.0],
+            ],
+            folding: [self.fold_iterations, self.fold_scale, self.fold_offset, self.rep_z],
+            camera: [self.kaleidoscope_folds, self.cam_distance, self.orbit_speed, self.wobble_amount],
+            audio_routing: [self.bass_target, self.mids_target, self.highs_target, self.energy_target],
+            transition: [self.beat_target, self.transition_type, 0.0, 0.0],
+        }
+    }
+
     /// Generate a random valid genome.
     pub fn random(rng: &mut impl Rng) -> Self {
         let mut shape_types = [0.0f32; 4];

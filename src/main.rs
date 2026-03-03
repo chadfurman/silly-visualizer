@@ -4,6 +4,7 @@ mod genome;
 mod lineage;
 mod renderer;
 mod scene;
+mod persistence;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,7 +16,10 @@ use winit::window::{Window, WindowId};
 
 use analysis::AudioAnalyzer;
 use audio::{AudioCapture, AudioSource};
+use genome::Genome;
+use lineage::Lineage;
 use renderer::{AudioUniforms, Renderer};
+use scene::{ChangeDetector, Crossfade, CrossfadeMode};
 
 /// Decay rate for beat indicator (drops from 1.0 to 0 over several frames).
 const BEAT_DECAY: f32 = 0.15;
@@ -28,6 +32,9 @@ const MAX_GAIN: f32 = 10.0;
 /// Auto-gain attack/release rates (asymmetric: fast attack, slow release).
 const GAIN_ATTACK: f32 = 0.04;
 const GAIN_RELEASE: f32 = 0.005;
+/// Noise gate: raw energy below this threshold is treated as silence.
+/// Prevents auto-gain from amplifying mic noise floor into visible geometry.
+const NOISE_GATE: f32 = 0.003;
 /// Number of color palettes available in the shader.
 const NUM_PALETTES: u32 = 6;
 const PALETTE_NAMES: [&str; NUM_PALETTES as usize] =
@@ -48,6 +55,11 @@ struct App {
     frame_count: u32,
     fps_update_time: Instant,
     last_frame_time: Instant,
+    // Evolution system
+    lineage: Lineage,
+    change_detector: ChangeDetector,
+    crossfade: Option<Crossfade>,
+    rng: rand::rngs::SmallRng,
 }
 
 impl App {
@@ -128,29 +140,39 @@ impl ApplicationHandler for App {
                         // they still drive the visualization. Uses asymmetric
                         // attack/release — responds quickly to loud signals,
                         // holds gain up during quiet passages.
-                        if result.energy > self.peak_energy {
-                            self.peak_energy +=
-                                (result.energy - self.peak_energy) * GAIN_ATTACK;
-                        } else {
-                            self.peak_energy +=
-                                (result.energy - self.peak_energy) * GAIN_RELEASE;
+                        // Only update auto-gain above noise floor to prevent
+                        // runaway amplification of silence.
+                        if result.energy >= NOISE_GATE {
+                            if result.energy > self.peak_energy {
+                                self.peak_energy +=
+                                    (result.energy - self.peak_energy) * GAIN_ATTACK;
+                            } else {
+                                self.peak_energy +=
+                                    (result.energy - self.peak_energy) * GAIN_RELEASE;
+                            }
+                            self.peak_energy = self.peak_energy.max(0.001);
+                            let target_gain =
+                                (TARGET_ENERGY / self.peak_energy).clamp(1.0, MAX_GAIN);
+                            self.auto_gain += (target_gain - self.auto_gain) * 0.02;
                         }
-                        self.peak_energy = self.peak_energy.max(0.001);
-                        let target_gain =
-                            (TARGET_ENERGY / self.peak_energy).clamp(1.0, MAX_GAIN);
-                        self.auto_gain += (target_gain - self.auto_gain) * 0.02;
 
                         let gain = self.auto_gain * self.sensitivity;
 
+                        // Noise gate: treat raw energy below threshold as silence.
+                        // This prevents auto-gain from amplifying mic noise floor
+                        // into visible geometry. The gate is binary but the EMA
+                        // smoothing naturally decays values to zero.
+                        let gate = if result.energy < NOISE_GATE { 0.0 } else { 1.0 };
+
                         // Smooth continuous values (bass, mids, highs, energy)
                         self.uniforms.bass = self.uniforms.bass * SMOOTH_RETAIN
-                            + result.bass * gain * SMOOTH_INCOMING;
+                            + result.bass * gain * gate * SMOOTH_INCOMING;
                         self.uniforms.mids = self.uniforms.mids * SMOOTH_RETAIN
-                            + result.mids * gain * SMOOTH_INCOMING;
+                            + result.mids * gain * gate * SMOOTH_INCOMING;
                         self.uniforms.highs = self.uniforms.highs * SMOOTH_RETAIN
-                            + result.highs * gain * SMOOTH_INCOMING;
+                            + result.highs * gain * gate * SMOOTH_INCOMING;
                         self.uniforms.energy = self.uniforms.energy * SMOOTH_RETAIN
-                            + result.energy * gain * SMOOTH_INCOMING;
+                            + result.energy * gain * gate * SMOOTH_INCOMING;
 
                         // Beat: snap to 1.0 on detection, otherwise decay toward 0
                         if result.beat > 0.5 {
@@ -160,7 +182,49 @@ impl ApplicationHandler for App {
                         }
 
                         self.uniforms.bands = result.bands;
+
+                        // Feed spectral profile to change detector
+                        let dt = Instant::now()
+                            .duration_since(self.last_frame_time)
+                            .as_secs_f32();
+                        let changed = self.change_detector.update(
+                            &result.spectral_profile,
+                            dt,
+                        );
+                        if changed && self.crossfade.is_none() {
+                            let old_genome = self.lineage.child.clone();
+                            self.lineage.advance(&mut self.rng, 0.5);
+                            let new_genome = self.lineage.child.clone();
+                            let mode = CrossfadeMode::from_genome_value(
+                                new_genome.transition_type,
+                            );
+                            self.crossfade = Some(Crossfade::new(
+                                old_genome, new_genome, mode,
+                            ));
+                            log::info!("scene evolution triggered (gen {})",
+                                self.lineage.generation_count());
+                        }
                     }
+                }
+
+                // Advance crossfade and get current genome
+                let dt = Instant::now()
+                    .duration_since(self.last_frame_time)
+                    .as_secs_f32();
+                let current_genome = if let Some(ref mut cf) = self.crossfade {
+                    let done = cf.advance(dt);
+                    let genome = cf.current_genome();
+                    if done {
+                        self.crossfade = None;
+                    }
+                    genome
+                } else {
+                    self.lineage.child.clone()
+                };
+
+                // Upload scene uniforms to GPU
+                if let Some(renderer) = &self.renderer {
+                    renderer.update_scene_uniforms(&current_genome.to_uniforms());
                 }
 
                 if let Some(renderer) = &mut self.renderer {
@@ -231,6 +295,50 @@ impl ApplicationHandler for App {
                             self.uniforms.palette_id = id as f32;
                             log::info!("palette: {} ({})", PALETTE_NAMES[id as usize], id);
                         }
+                        Key::Character("n") => {
+                            // Manual scene evolution
+                            if self.crossfade.is_none() {
+                                let old_genome = self.lineage.child.clone();
+                                self.lineage.advance(&mut self.rng, 0.5);
+                                let new_genome = self.lineage.child.clone();
+                                let mode = CrossfadeMode::from_genome_value(
+                                    new_genome.transition_type,
+                                );
+                                self.crossfade = Some(Crossfade::new(
+                                    old_genome, new_genome, mode,
+                                ));
+                                log::info!("manual evolution (gen {})",
+                                    self.lineage.generation_count());
+                            }
+                        }
+                        Key::Character("b") => {
+                            // Bookmark current genome as favorite
+                            match persistence::save_favorite(&self.lineage.child) {
+                                Ok(path) => log::info!("saved favorite: {}",
+                                    path.display()),
+                                Err(e) => log::warn!("failed to save favorite: {e}"),
+                            }
+                        }
+                        Key::Character("l") => {
+                            // Load a random favorite
+                            match persistence::load_random_favorite() {
+                                Ok(Some(genome)) => {
+                                    if self.crossfade.is_none() {
+                                        let old = self.lineage.child.clone();
+                                        self.lineage.inject(genome);
+                                        let mode = CrossfadeMode::from_genome_value(
+                                            self.lineage.child.transition_type,
+                                        );
+                                        self.crossfade = Some(Crossfade::new(
+                                            old, self.lineage.child.clone(), mode,
+                                        ));
+                                        log::info!("loaded random favorite");
+                                    }
+                                }
+                                Ok(None) => log::info!("no favorites saved yet"),
+                                Err(e) => log::warn!("failed to load favorite: {e}"),
+                            }
+                        }
                         Key::Character(c) => {
                             if let Some(digit) =
                                 c.chars().next().and_then(|ch| ch.to_digit(10))
@@ -251,6 +359,22 @@ impl ApplicationHandler for App {
 
 fn main() {
     env_logger::init();
+
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::from_os_rng();
+
+    // Try to load previous lineage, otherwise start fresh
+    let lineage = match persistence::load_lineage() {
+        Ok(l) => {
+            log::info!("loaded lineage ({} generations)", l.generation_count());
+            l
+        }
+        Err(_) => {
+            log::info!("starting fresh lineage");
+            Lineage::new(Genome::random(&mut rng))
+        }
+    };
+
     let event_loop = EventLoop::new().unwrap();
     let mut app = App {
         window: None,
@@ -267,6 +391,15 @@ fn main() {
         frame_count: 0,
         fps_update_time: Instant::now(),
         last_frame_time: Instant::now(),
+        lineage,
+        change_detector: ChangeDetector::new(0.08, 8.0),
+        crossfade: None,
+        rng,
     };
     event_loop.run_app(&mut app).unwrap();
+
+    // Save lineage on exit
+    if let Err(e) = persistence::save_lineage(&app.lineage) {
+        log::warn!("failed to save lineage: {e}");
+    }
 }
