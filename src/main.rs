@@ -6,6 +6,8 @@ mod genome;
 mod lineage;
 mod persistence;
 mod renderer;
+#[allow(dead_code)]
+mod replay;
 mod scene;
 mod uniforms;
 
