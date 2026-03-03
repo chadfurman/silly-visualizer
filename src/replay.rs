@@ -64,7 +64,9 @@ impl AudioRecorder {
 
 pub struct AudioPlayer {
     samples: Vec<f32>,
+    #[allow(dead_code)]
     sample_rate: u32,
+    #[allow(dead_code)]
     channels: u32,
     cursor: usize,
     chunk_size: usize,
@@ -126,6 +128,7 @@ impl AudioPlayer {
         })
     }
 
+    #[allow(dead_code)]
     pub fn is_paused(&self) -> bool {
         self.paused
     }
@@ -155,6 +158,7 @@ impl AudioPlayer {
         log::info!("frame {} (cursor {})", self.frame_number, self.cursor);
     }
 
+    #[allow(dead_code)]
     pub fn is_done(&self) -> bool {
         self.cursor >= self.samples.len()
     }
@@ -163,10 +167,12 @@ impl AudioPlayer {
         (self.samples.len() / self.chunk_size.max(1)) as u32
     }
 
+    #[allow(dead_code)]
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
 
+    #[allow(dead_code)]
     pub fn channels(&self) -> u32 {
         self.channels
     }

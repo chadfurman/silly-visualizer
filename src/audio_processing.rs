@@ -51,7 +51,7 @@ pub fn process_audio(
     Some(result)
 }
 
-fn update_auto_gain(state: &mut AudioState, energy: f32) {
+pub fn update_auto_gain(state: &mut AudioState, energy: f32) {
     if energy < NOISE_GATE {
         return;
     }
@@ -62,11 +62,11 @@ fn update_auto_gain(state: &mut AudioState, energy: f32) {
     state.auto_gain += (target_gain - state.auto_gain) * 0.02;
 }
 
-fn noise_gate(energy: f32) -> f32 {
+pub fn noise_gate(energy: f32) -> f32 {
     if energy < NOISE_GATE { 0.0 } else { 1.0 }
 }
 
-fn apply_smoothing(
+pub fn apply_smoothing(
     uniforms: &mut AudioUniforms,
     result: &AnalysisResult,
     gain: f32,
@@ -79,7 +79,7 @@ fn apply_smoothing(
     uniforms.energy = uniforms.energy * SMOOTH_RETAIN + result.energy * scale;
 }
 
-fn apply_beat(uniforms: &mut AudioUniforms, beat: f32) {
+pub fn apply_beat(uniforms: &mut AudioUniforms, beat: f32) {
     if beat > 0.5 {
         uniforms.beat = 1.0;
     } else {

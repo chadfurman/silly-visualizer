@@ -34,6 +34,8 @@ pub struct App {
     pub lineage: Lineage,
     pub change_detector: ChangeDetector,
     pub crossfade: Option<Crossfade>,
+    pub recorder: Option<crate::replay::AudioRecorder>,
+    pub player: Option<crate::replay::AudioPlayer>,
     pub rng: rand::rngs::SmallRng,
 }
 
@@ -64,7 +66,11 @@ impl App {
             self.request_redraw();
             return;
         }
-        self.process_audio_frame();
+        if self.player.is_some() {
+            self.process_replay_frame();
+        } else {
+            self.process_audio_frame();
+        }
         self.advance_crossfade_and_upload();
         self.uniforms.debug_flags = self.debug_visual_mode as f32;
         if let Some(renderer) = &mut self.renderer {
@@ -93,12 +99,34 @@ impl App {
             audio, analyzer, &mut self.sample_buf,
             &mut self.uniforms, &mut self.audio_state, self.sensitivity,
         );
+        if let Some(rec) = &mut self.recorder {
+            rec.push_samples(&self.sample_buf);
+        }
         if let Some(result) = result {
             self.check_evolution(&result.spectral_profile);
         }
     }
 
+    fn process_replay_frame(&mut self) {
+        let Some(player) = &mut self.player else { return };
+        let Some(analyzer) = &mut self.analyzer else { return };
+        let chunk = match player.next_chunk() {
+            Some(c) => c.to_vec(),
+            None => return,
+        };
+        let result = analyzer.analyze(&chunk);
+        let gain = self.audio_state.auto_gain * self.sensitivity;
+        let gate = audio_processing::noise_gate(result.energy);
+        audio_processing::apply_smoothing(&mut self.uniforms, &result, gain, gate);
+        audio_processing::apply_beat(&mut self.uniforms, result.beat);
+        self.uniforms.bands = result.bands;
+        audio_processing::update_auto_gain(&mut self.audio_state, result.energy);
+    }
+
     fn check_evolution(&mut self, spectral_profile: &[f32; 5]) {
+        if self.player.is_some() {
+            return;
+        }
         let dt = self.frame_dt();
         let changed = self.change_detector.update(spectral_profile, dt);
         if changed && self.crossfade.is_none() {
@@ -261,5 +289,45 @@ impl App {
     pub fn handle_key_sensitivity(&mut self, digit: u32) {
         self.sensitivity = digit as f32 / 5.0;
         log::info!("sensitivity: {:.1}", self.sensitivity);
+    }
+
+    pub fn handle_key_replay_step(&mut self, frames: i32) {
+        if let Some(player) = &mut self.player {
+            player.step_frames(frames);
+        }
+    }
+
+    pub fn handle_key_replay_pause(&mut self) {
+        if let Some(player) = &mut self.player {
+            player.toggle_pause();
+        }
+    }
+
+    pub fn handle_key_record(&mut self) {
+        if self.recorder.as_ref().is_some_and(|r| r.is_recording()) {
+            let mut rec = self.recorder.take().unwrap();
+            rec.stop();
+            save_recording(&rec);
+        } else {
+            let mut rec = crate::replay::AudioRecorder::new(44100, 1);
+            rec.start();
+            self.recorder = Some(rec);
+        }
+    }
+}
+
+fn save_recording(rec: &crate::replay::AudioRecorder) {
+    let Some(dir) = persistence::data_dir().map(|d| d.join("recordings")) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let path = dir.join(format!("{timestamp}.svrx"));
+    match rec.save(&path) {
+        Ok(()) => log::info!("saved recording: {}", path.display()),
+        Err(e) => log::warn!("failed to save recording: {e}"),
     }
 }

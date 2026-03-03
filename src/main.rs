@@ -6,7 +6,6 @@ mod genome;
 mod lineage;
 mod persistence;
 mod renderer;
-#[allow(dead_code)]
 mod replay;
 mod scene;
 mod uniforms;
@@ -66,7 +65,12 @@ fn handle_key_press(app: &mut App, event_loop: &ActiveEventLoop, key: &Key) {
     match key.as_ref() {
         Key::Named(NamedKey::Escape) => event_loop.exit(),
         Key::Named(NamedKey::Space) => app.handle_key_space(),
+        Key::Named(NamedKey::ArrowLeft) => app.handle_key_replay_step(-1),
+        Key::Named(NamedKey::ArrowRight) => app.handle_key_replay_step(1),
+        Key::Named(NamedKey::ArrowUp) => app.handle_key_replay_step(60),
+        Key::Named(NamedKey::ArrowDown) => app.handle_key_replay_step(-60),
         Key::Character("f") => app.handle_key_fullscreen(),
+        Key::Character("R") => app.handle_key_record(),
         Key::Character("r") => app.handle_key_randomize(),
         Key::Character("d") => app.handle_key_debug(),
         Key::Character("c") => app.handle_key_palette(),
@@ -74,6 +78,7 @@ fn handle_key_press(app: &mut App, event_loop: &ActiveEventLoop, key: &Key) {
         Key::Character("b") => app.handle_key_bookmark(),
         Key::Character("l") => app.handle_key_load_favorite(),
         Key::Character("v") => app.handle_key_visual_debug(),
+        Key::Character("p") => app.handle_key_replay_pause(),
         Key::Character(c) => handle_digit_key(app, c),
         _ => {}
     }
@@ -90,10 +95,35 @@ fn handle_digit_key(app: &mut App, c: &str) {
 fn main() {
     env_logger::init();
     let mut app = build_app();
+    load_replay_if_requested(&mut app);
     let event_loop = EventLoop::new().unwrap();
     event_loop.run_app(&mut app).unwrap();
     if let Err(e) = persistence::save_lineage(&app.lineage) {
         log::warn!("failed to save lineage: {e}");
+    }
+}
+
+fn parse_replay_arg() -> Option<std::path::PathBuf> {
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--replay" && i + 1 < args.len() {
+            return Some(std::path::PathBuf::from(&args[i + 1]));
+        }
+    }
+    None
+}
+
+fn load_replay_if_requested(app: &mut App) {
+    let Some(path) = parse_replay_arg() else { return };
+    match replay::AudioPlayer::load(&path) {
+        Ok(player) => {
+            log::info!("replay mode: {} ({} frames)", path.display(), player.total_frames());
+            app.player = Some(player);
+        }
+        Err(e) => {
+            log::error!("failed to load replay: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -111,7 +141,8 @@ fn new_app(rng: rand::rngs::SmallRng, lineage: Lineage) -> App {
         audio_source: audio::AudioSource::Mic, sample_buf: Vec::with_capacity(4096),
         audio_state: AudioState::new(), debug_mode: false, debug_visual_mode: 0,
         frame_count: 0, fps_update_time: Instant::now(), last_frame_time: Instant::now(),
-        lineage, change_detector: ChangeDetector::new(0.08, 8.0), crossfade: None, rng,
+        lineage, change_detector: ChangeDetector::new(0.08, 8.0), crossfade: None,
+        recorder: None, player: None, rng,
     }
 }
 
