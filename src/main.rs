@@ -3,6 +3,7 @@ mod audio;
 mod renderer;
 
 use std::sync::Arc;
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -16,8 +17,18 @@ use renderer::{AudioUniforms, Renderer};
 /// Decay rate for beat indicator (drops from 1.0 to 0 over several frames).
 const BEAT_DECAY: f32 = 0.15;
 /// Smoothing factor for audio values (0 = no smoothing, 1 = frozen).
-const SMOOTH_RETAIN: f32 = 0.8;
+const SMOOTH_RETAIN: f32 = 0.92;
 const SMOOTH_INCOMING: f32 = 1.0 - SMOOTH_RETAIN;
+/// Auto-gain: target energy level and limits.
+const TARGET_ENERGY: f32 = 0.05;
+const MAX_GAIN: f32 = 15.0;
+/// Auto-gain attack/release rates (asymmetric: fast attack, slow release).
+const GAIN_ATTACK: f32 = 0.05;
+const GAIN_RELEASE: f32 = 0.003;
+/// Number of color palettes available in the shader.
+const NUM_PALETTES: u32 = 6;
+const PALETTE_NAMES: [&str; NUM_PALETTES as usize] =
+    ["Electric Neon", "Inferno", "Deep Ocean", "Vaporwave", "Acid", "Monochrome"];
 
 struct App {
     window: Option<Arc<Window>>,
@@ -27,6 +38,13 @@ struct App {
     uniforms: AudioUniforms,
     sensitivity: f32,
     audio_source: AudioSource,
+    sample_buf: Vec<f32>,
+    peak_energy: f32,
+    auto_gain: f32,
+    debug_mode: bool,
+    frame_count: u32,
+    fps_update_time: Instant,
+    last_frame_time: Instant,
 }
 
 impl App {
@@ -99,19 +117,37 @@ impl ApplicationHandler for App {
 
                 // Analyze audio and apply exponential smoothing
                 if let (Some(audio), Some(analyzer)) = (&self.audio, &mut self.analyzer) {
-                    let samples = audio.get_samples();
-                    if !samples.is_empty() {
-                        let result = analyzer.analyze(&samples);
+                    audio.get_samples_into(&mut self.sample_buf);
+                    if !self.sample_buf.is_empty() {
+                        let result = analyzer.analyze(&self.sample_buf);
+
+                        // Auto-gain: boost quiet signals (vocals, speech) so
+                        // they still drive the visualization. Uses asymmetric
+                        // attack/release — responds quickly to loud signals,
+                        // holds gain up during quiet passages.
+                        if result.energy > self.peak_energy {
+                            self.peak_energy +=
+                                (result.energy - self.peak_energy) * GAIN_ATTACK;
+                        } else {
+                            self.peak_energy +=
+                                (result.energy - self.peak_energy) * GAIN_RELEASE;
+                        }
+                        self.peak_energy = self.peak_energy.max(0.001);
+                        let target_gain =
+                            (TARGET_ENERGY / self.peak_energy).clamp(1.0, MAX_GAIN);
+                        self.auto_gain += (target_gain - self.auto_gain) * 0.02;
+
+                        let gain = self.auto_gain * self.sensitivity;
 
                         // Smooth continuous values (bass, mids, highs, energy)
                         self.uniforms.bass = self.uniforms.bass * SMOOTH_RETAIN
-                            + result.bass * self.sensitivity * SMOOTH_INCOMING;
+                            + result.bass * gain * SMOOTH_INCOMING;
                         self.uniforms.mids = self.uniforms.mids * SMOOTH_RETAIN
-                            + result.mids * self.sensitivity * SMOOTH_INCOMING;
+                            + result.mids * gain * SMOOTH_INCOMING;
                         self.uniforms.highs = self.uniforms.highs * SMOOTH_RETAIN
-                            + result.highs * self.sensitivity * SMOOTH_INCOMING;
+                            + result.highs * gain * SMOOTH_INCOMING;
                         self.uniforms.energy = self.uniforms.energy * SMOOTH_RETAIN
-                            + result.energy * self.sensitivity * SMOOTH_INCOMING;
+                            + result.energy * gain * SMOOTH_INCOMING;
 
                         // Beat: snap to 1.0 on detection, otherwise decay toward 0
                         if result.beat > 0.5 {
@@ -127,6 +163,24 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.render(&mut self.uniforms);
                 }
+
+                // FPS counter
+                self.frame_count += 1;
+                let now = Instant::now();
+                let elapsed = now.duration_since(self.fps_update_time).as_secs_f32();
+                if self.debug_mode && elapsed >= 0.5 {
+                    let fps = self.frame_count as f32 / elapsed;
+                    let frame_ms = now.duration_since(self.last_frame_time).as_secs_f32() * 1000.0;
+                    if let Some(window) = &self.window {
+                        window.set_title(&format!(
+                            "silly visualizer | {fps:.0} FPS | {frame_ms:.1} ms"
+                        ));
+                    }
+                    self.frame_count = 0;
+                    self.fps_update_time = now;
+                }
+                self.last_frame_time = now;
+
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -160,6 +214,20 @@ impl ApplicationHandler for App {
                                 renderer.randomize_seed();
                             }
                         }
+                        Key::Character("d") => {
+                            self.debug_mode = !self.debug_mode;
+                            if !self.debug_mode {
+                                if let Some(window) = &self.window {
+                                    window.set_title("silly visualizer");
+                                }
+                            }
+                            log::info!("debug mode: {}", self.debug_mode);
+                        }
+                        Key::Character("c") => {
+                            let id = (self.uniforms.palette_id as u32 + 1) % NUM_PALETTES;
+                            self.uniforms.palette_id = id as f32;
+                            log::info!("palette: {} ({})", PALETTE_NAMES[id as usize], id);
+                        }
                         Key::Character(c) => {
                             if let Some(digit) =
                                 c.chars().next().and_then(|ch| ch.to_digit(10))
@@ -189,6 +257,13 @@ fn main() {
         uniforms: AudioUniforms::default(),
         sensitivity: 1.0,
         audio_source: AudioSource::Mic,
+        sample_buf: Vec::with_capacity(4096),
+        peak_energy: 0.01,
+        auto_gain: 1.0,
+        debug_mode: false,
+        frame_count: 0,
+        fps_update_time: Instant::now(),
+        last_frame_time: Instant::now(),
     };
     event_loop.run_app(&mut app).unwrap();
 }

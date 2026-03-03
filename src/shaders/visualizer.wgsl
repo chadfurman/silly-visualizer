@@ -6,9 +6,10 @@ struct AudioUniforms {
     energy: f32,
     beat: f32,
     seed: f32,
-    _pad: f32,
+    palette_id: f32,
     resolution: vec2<f32>,
-    bands: array<f32, 16>,
+    _pad2: vec2<f32>,
+    bands: array<vec4<f32>, 4>,
 }
 
 @group(0) @binding(0) var<uniform> u: AudioUniforms;
@@ -71,22 +72,85 @@ fn smooth_intersection(d1: f32, d2: f32, k: f32) -> f32 {
     return mix(d2, d1, h) + k * h * (1.0 - h);
 }
 
-// ─── Color Palette ──────────────────────────────────────────────────────────
+// ─── Color Palettes ─────────────────────────────────────────────────────────
+// Each palette is defined by (a, b, c, d) vectors for: a + b * cos(TAU * (c*t + d))
+// See https://iquilezles.org/articles/palettes/
+
+const NUM_PALETTES: i32 = 6;
+
+fn palette_params(id: i32) -> array<vec3<f32>, 4> {
+    switch (id) {
+        // 0: Electric Neon — magentas, cyans, hot pinks
+        case 0: {
+            return array<vec3<f32>, 4>(
+                vec3<f32>(0.5, 0.5, 0.5),
+                vec3<f32>(0.6, 0.6, 0.6),
+                vec3<f32>(1.0, 1.0, 1.0),
+                vec3<f32>(0.0, 0.33, 0.67),
+            );
+        }
+        // 1: Inferno — deep reds, oranges, golds
+        case 1: {
+            return array<vec3<f32>, 4>(
+                vec3<f32>(0.5, 0.5, 0.5),
+                vec3<f32>(0.5, 0.5, 0.5),
+                vec3<f32>(1.0, 1.0, 1.0),
+                vec3<f32>(0.0, 0.10, 0.20),
+            );
+        }
+        // 2: Deep Ocean — teals, blues, aquamarines
+        case 2: {
+            return array<vec3<f32>, 4>(
+                vec3<f32>(0.5, 0.5, 0.5),
+                vec3<f32>(0.5, 0.5, 0.5),
+                vec3<f32>(1.0, 1.0, 1.0),
+                vec3<f32>(0.30, 0.53, 0.67),
+            );
+        }
+        // 3: Vaporwave — purples, pinks, warm cyans
+        case 3: {
+            return array<vec3<f32>, 4>(
+                vec3<f32>(0.5, 0.5, 0.5),
+                vec3<f32>(0.6, 0.55, 0.65),
+                vec3<f32>(0.8, 0.8, 1.0),
+                vec3<f32>(0.55, 0.40, 0.75),
+            );
+        }
+        // 4: Acid — greens, yellows, toxic brights
+        case 4: {
+            return array<vec3<f32>, 4>(
+                vec3<f32>(0.5, 0.5, 0.5),
+                vec3<f32>(0.7, 0.65, 0.5),
+                vec3<f32>(1.0, 1.0, 1.0),
+                vec3<f32>(0.15, 0.25, 0.50),
+            );
+        }
+        // 5: Monochrome — silver, white, cool grays
+        default: {
+            return array<vec3<f32>, 4>(
+                vec3<f32>(0.5, 0.5, 0.5),
+                vec3<f32>(0.4, 0.4, 0.45),
+                vec3<f32>(1.0, 1.0, 1.0),
+                vec3<f32>(0.0, 0.0, 0.05),
+            );
+        }
+    }
+}
 
 fn palette(t: f32) -> vec3<f32> {
-    let a = vec3<f32>(0.5, 0.5, 0.5);
-    let b = vec3<f32>(0.5, 0.5, 0.5);
-    let c = vec3<f32>(1.0, 1.0, 1.0);
-    let d = vec3<f32>(0.263, 0.416, 0.557);
-    return a + b * cos(TAU * (c * t + d));
+    let id = i32(u.palette_id) % NUM_PALETTES;
+    let p = palette_params(id);
+    return p[0] + p[1] * cos(TAU * (p[2] * t + p[3]));
 }
 
 fn palette_shifted(t: f32, shift: f32) -> vec3<f32> {
-    let a = vec3<f32>(0.5, 0.5, 0.5);
-    let b = vec3<f32>(0.5, 0.5, 0.5);
-    let c = vec3<f32>(1.0, 1.0, 0.5);
-    let d = vec3<f32>(0.263 + shift, 0.416 + shift * 0.7, 0.557 + shift * 0.3);
-    return a + b * cos(TAU * (c * t + d));
+    let id = i32(u.palette_id) % NUM_PALETTES;
+    let p = palette_params(id);
+    // Asymmetric frequency + shifted phase for psychedelic variety
+    let c = p[2] * vec3<f32>(1.0, 0.7, 1.3);
+    let d = p[3] + vec3<f32>(shift, shift * 0.6, shift * 0.3);
+    let b = p[1] * vec3<f32>(1.1, 1.0, 1.15);
+    return p[0] + b * cos(TAU * (c * t + d));
 }
 
 // ─── Rotation Matrices ──────────────────────────────────────────────────────
@@ -165,52 +229,52 @@ fn map(p_in: vec3<f32>) -> f32 {
     let highs = u.highs;
     let energy = u.energy;
 
-    // Rotation driven by time and mids
-    let rot_speed = 0.3 + mids * 1.5;
+    // Rotation driven by time with gentle audio influence
+    let rot_speed = 0.3 + mids * 0.3;
     var p = rot_y(t * rot_speed * 0.4) * rot_x(t * rot_speed * 0.25) * p_in;
 
     // ── Space repetition: infinite tunnel / kaleidoscopic ──
     // Domain repetition along Z for tunnel effect
-    let rep_z = 4.0 - bass * 1.0;
+    let rep_z = 4.0 - bass * 0.3;
     var rp = p;
     rp.z = wmod(p.z + t * 0.8, rep_z) - rep_z * 0.5;
 
     // Kaleidoscopic angular folding in XY
-    let fold_angle = PI / (3.0 + mids * 3.0);
+    let fold_angle = PI / (3.0 + mids * 0.8);
     let angle = atan2(rp.y, rp.x);
     let folded_angle = wmod(angle, fold_angle * 2.0) - fold_angle;
     let r_xy = length(rp.xy);
     rp = vec3<f32>(r_xy * cos(folded_angle), r_xy * sin(folded_angle), rp.z);
 
     // ── Iterative space folding (Mandelbox-like) ──
-    let fold_iters = i32(clamp(1.0 + energy * 4.0, 1.0, 5.0));
-    let fold_scale = 1.5 + energy * 0.8;
+    let fold_iters = i32(clamp(1.0 + energy * 2.0, 1.0, 4.0));
+    let fold_scale = 1.5 + energy * 0.3;
     let fp = fold_space(rp * 0.5, fold_iters, fold_scale) * 2.0;
 
     // ── Primary shape: morph between torus and octahedron ──
-    let morph = 0.5 + 0.5 * sin(t * 0.6 + bass * PI);
-    let geo_scale = 1.0 + bass * 0.8;
+    let morph = 0.5 + 0.5 * sin(t * 0.6 + bass * 0.8);
+    let geo_scale = 1.0 + bass * 0.25;
 
-    let torus_r = vec2<f32>(1.2 * geo_scale, 0.3 + bass * 0.2);
+    let torus_r = vec2<f32>(1.2 * geo_scale, 0.3 + bass * 0.08);
     let d_torus = sd_torus(rp, torus_r);
     let d_octa = sd_octahedron(rp, 1.0 * geo_scale);
     let d_primary = mix(d_torus, d_octa, morph);
 
     // ── Secondary shapes from folded space ──
-    let d_folded_sphere = sd_sphere(fp, 0.8 + highs * 0.5);
-    let d_folded_box = sd_box(fp, vec3<f32>(0.5 + mids * 0.3));
+    let d_folded_sphere = sd_sphere(fp, 0.8 + highs * 0.2);
+    let d_folded_box = sd_box(fp, vec3<f32>(0.5 + mids * 0.1));
     let d_secondary = smooth_union(d_folded_sphere, d_folded_box, 0.5);
 
     // ── Combine primary and secondary ──
-    var d = smooth_union(d_primary, d_secondary * 0.6, 0.8 + bass * 0.4);
+    var d = smooth_union(d_primary, d_secondary * 0.6, 0.8 + bass * 0.15);
 
     // ── Carved detail: subtract rotating octahedra ──
-    let carve_p = rot_z(t * 1.2 + mids * 2.0) * rp;
-    let d_carve = sd_octahedron(carve_p, 0.6 + highs * 0.5);
-    d = smooth_subtraction(d_carve, d, 0.3 + energy * 0.2);
+    let carve_p = rot_z(t * 1.2 + mids * 0.5) * rp;
+    let d_carve = sd_octahedron(carve_p, 0.6 + highs * 0.2);
+    d = smooth_subtraction(d_carve, d, 0.3 + energy * 0.08);
 
     // ── Add pulsing spheres at tunnel repetitions ──
-    let pulse = 0.3 + 0.2 * sin(t * 4.0 + bass * TAU);
+    let pulse = 0.3 + 0.1 * sin(t * 2.0 + bass * PI);
     let sp = p;
     let srp_z = wmod(sp.z + t * 0.8, rep_z) - rep_z * 0.5;
     let d_pulse = sd_sphere(vec3<f32>(sp.x, sp.y, srp_z), pulse);
@@ -293,8 +357,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
     // ── Camera setup: orbiting camera ──
     let seed = u.seed;
-    let cam_dist = 5.0 - bass * 1.5;
-    let cam_angle_y = t * 0.2 + mids * 0.5;
+    let cam_dist = 5.0 - bass * 0.4;
+    let cam_angle_y = t * 0.2 + mids * 0.1;
     let cam_angle_x = sin(t * 0.15) * 0.4;
     var ro = vec3<f32>(
         cam_dist * sin(cam_angle_y) * cos(cam_angle_x),
@@ -307,132 +371,87 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let forward = normalize(look_at - ro);
     let right = normalize(cross(forward, vec3<f32>(0.0, 1.0, 0.0)));
     let up = cross(right, forward);
-    let focal = 1.5 - energy * 0.3;
+    let focal = 1.5 - energy * 0.1;
     let rd = normalize(forward * focal + right * uv.x + up * uv.y);
 
-    // ── Chromatic aberration on beat ──
-    let ca_strength = beat * 0.015;
-    let rd_r = normalize(forward * focal + right * (uv.x + ca_strength) + up * uv.y);
-    let rd_b = normalize(forward * focal + right * (uv.x - ca_strength) + up * uv.y);
+    // ── Single raymarch (was 3 per pixel for chromatic aberration) ──
+    let result = raymarch(ro, rd);
 
-    // ── Raymarch for each color channel ──
-    let result_g = raymarch(ro, rd);
-    let result_r = raymarch(ro, rd_r);
-    let result_b = raymarch(ro, rd_b);
+    // ── Lighting setup ──
+    let light_pos = vec3<f32>(
+        sin(t * 0.7) * 2.0,
+        2.0 + cos(t * 0.5),
+        cos(t * 0.7) * 2.0,
+    );
 
-    // ── Coloring ──
+    // ── Coloring: shade full RGB from single raymarch ──
     var color = vec3<f32>(0.0);
-    var glow = vec3<f32>(0.0);
 
-    // -- Green/main channel --
-    if (result_g.dist < SURF_DIST * 2.0) {
-        let hit_p = ro + rd * result_g.total_dist;
+    if (result.dist < SURF_DIST * 2.0) {
+        let hit_p = ro + rd * result.total_dist;
         let n = calc_normal(hit_p);
-
-        // Cosine palette driven by distance and bass hue shift
         let base_color = palette_shifted(
-            result_g.total_dist * 0.1 + t * 0.05 + dot(n, vec3<f32>(0.3, 0.6, 0.1)),
-            bass * 0.5 + beat * 0.3
+            result.total_dist * 0.15 + t * 0.08 + dot(n, vec3<f32>(0.3, 0.6, 0.1)),
+            bass * 0.6 + beat * 0.4
         );
-
-        // Lighting: ambient + diffuse from orbiting light
-        let light_dir = normalize(vec3<f32>(
-            sin(t * 0.7) * 2.0,
-            2.0 + cos(t * 0.5),
-            cos(t * 0.7) * 2.0,
-        ) - hit_p);
+        let light_dir = normalize(light_pos - hit_p);
         let diff = max(dot(n, light_dir), 0.0);
         let spec = pow(max(dot(reflect(-light_dir, n), -rd), 0.0), 16.0 + highs * 32.0);
-
-        // Saturation controlled by mids
         let luminance = dot(base_color, vec3<f32>(0.299, 0.587, 0.114));
-        let saturated = mix(vec3<f32>(luminance), base_color, 0.7 + mids * 1.0);
-
-        // Brightness controlled by highs
-        let brightness = 0.8 + highs * 0.6;
-
-        let lit = saturated * (0.15 + diff * 0.7) + spec * 0.4 * (1.0 + highs * 2.0);
-        color.g = (lit.g * brightness);
-
-        // Fog based on distance
-        let fog = exp(-result_g.total_dist * 0.06);
-        color.g = color.g * fog;
-    }
-
-    // -- Red channel (with chromatic offset) --
-    if (result_r.dist < SURF_DIST * 2.0) {
-        let hit_p = ro + rd_r * result_r.total_dist;
-        let n = calc_normal(hit_p);
-        let base_color = palette_shifted(
-            result_r.total_dist * 0.1 + t * 0.05 + dot(n, vec3<f32>(0.3, 0.6, 0.1)),
-            bass * 0.5 + beat * 0.3
-        );
-        let light_dir = normalize(vec3<f32>(
-            sin(t * 0.7) * 2.0, 2.0 + cos(t * 0.5), cos(t * 0.7) * 2.0
-        ) - hit_p);
-        let diff = max(dot(n, light_dir), 0.0);
-        let spec = pow(max(dot(reflect(-light_dir, n), -rd_r), 0.0), 16.0 + highs * 32.0);
-        let luminance = dot(base_color, vec3<f32>(0.299, 0.587, 0.114));
-        let saturated = mix(vec3<f32>(luminance), base_color, 0.7 + mids * 1.0);
-        let brightness = 0.8 + highs * 0.6;
-        let lit = saturated * (0.15 + diff * 0.7) + spec * 0.4 * (1.0 + highs * 2.0);
-        color.r = lit.r * brightness * exp(-result_r.total_dist * 0.06);
-    }
-
-    // -- Blue channel (with chromatic offset) --
-    if (result_b.dist < SURF_DIST * 2.0) {
-        let hit_p = ro + rd_b * result_b.total_dist;
-        let n = calc_normal(hit_p);
-        let base_color = palette_shifted(
-            result_b.total_dist * 0.1 + t * 0.05 + dot(n, vec3<f32>(0.3, 0.6, 0.1)),
-            bass * 0.5 + beat * 0.3
-        );
-        let light_dir = normalize(vec3<f32>(
-            sin(t * 0.7) * 2.0, 2.0 + cos(t * 0.5), cos(t * 0.7) * 2.0
-        ) - hit_p);
-        let diff = max(dot(n, light_dir), 0.0);
-        let spec = pow(max(dot(reflect(-light_dir, n), -rd_b), 0.0), 16.0 + highs * 32.0);
-        let luminance = dot(base_color, vec3<f32>(0.299, 0.587, 0.114));
-        let saturated = mix(vec3<f32>(luminance), base_color, 0.7 + mids * 1.0);
-        let brightness = 0.8 + highs * 0.6;
-        let lit = saturated * (0.15 + diff * 0.7) + spec * 0.4 * (1.0 + highs * 2.0);
-        color.b = lit.b * brightness * exp(-result_b.total_dist * 0.06);
+        let saturated = mix(vec3<f32>(luminance), base_color, 1.2 + mids * 0.8);
+        let brightness = 1.0 + highs * 0.5;
+        let lit = saturated * (0.25 + diff * 0.75) + spec * 0.5 * (1.0 + highs * 2.0);
+        let fog = exp(-result.total_dist * 0.05);
+        color = lit * brightness * fog;
     }
 
     // ── Glow from close misses ──
-    let glow_intensity = 0.02 / (result_g.closest + 0.01);
-    let glow_color = palette(t * 0.1 + result_g.total_dist * 0.05 + bass);
-    glow = glow_color * glow_intensity * (0.3 + highs * 1.5);
+    let glow_intensity = 0.03 / (result.closest + 0.01);
+    let glow_color = palette(t * 0.1 + result.total_dist * 0.05 + bass);
+    var glow = glow_color * glow_intensity * (0.4 + highs * 1.5);
 
     // Step-based ambient glow (more steps = ray was grazing surfaces)
-    let step_glow = f32(result_g.steps) / f32(MAX_STEPS);
+    let step_glow = f32(result.steps) / f32(MAX_STEPS);
     let step_color = palette_shifted(step_glow + t * 0.02, bass * 0.8);
-    glow = glow + step_color * step_glow * step_glow * 0.5;
+    glow = glow + step_color * step_glow * step_glow * 0.6;
 
     color = color + glow;
 
     // ── Beat flash: sudden bright pulse ──
-    let flash = beat * beat * 0.15;
+    let flash = beat * beat * 0.2;
     color = color + vec3<f32>(flash);
 
     // ── Palette shift on beat: nudge hues ──
-    let beat_shift = beat * 0.2;
+    let beat_shift = beat * 0.25;
     color = mix(color, color.gbr, beat_shift);
 
     // ── Feedback: blend with previous frame for melting trail effect ──
+    // Chromatic aberration applied as screen-space UV offset on feedback sampling
     let screen_uv = pos.xy / u.resolution;
-    let drift = vec2<f32>(sin(u.time * 0.1) * 0.002, cos(u.time * 0.13) * 0.002);
-    let prev_color = textureSample(prev_frame, prev_sampler, screen_uv + drift);
-    let blend_factor = 0.15 + beat * 0.3;
-    color = mix(prev_color.rgb, color, blend_factor);
+    let drift = vec2<f32>(sin(u.time * 0.1) * 0.003, cos(u.time * 0.13) * 0.003);
+    let ca_offset = beat * 0.015;
+    let prev_r = textureSample(prev_frame, prev_sampler, screen_uv + drift + vec2<f32>(ca_offset, 0.0)).r;
+    let prev_g = textureSample(prev_frame, prev_sampler, screen_uv + drift).g;
+    let prev_b = textureSample(prev_frame, prev_sampler, screen_uv + drift - vec2<f32>(ca_offset, 0.0)).b;
+    let prev_srgb = vec3<f32>(prev_r, prev_g, prev_b);
+    let prev_linear = pow(prev_srgb, vec3<f32>(2.2));
+    // Fade the previous frame down so trails decay instead of accumulating
+    let trail_decay = 0.85;
+    let blend_factor = 0.45 + beat * 0.25;
+    color = mix(prev_linear * trail_decay, color, blend_factor);
 
-    // ── Vignette ──
+    // ── Vignette (softer) ──
     let vignette_uv = pos.xy / u.resolution - 0.5;
-    let vignette = 1.0 - dot(vignette_uv, vignette_uv) * 0.8;
+    let vignette = 1.0 - dot(vignette_uv, vignette_uv) * 0.5;
     color = color * vignette;
 
-    // ── Tone mapping (simple Reinhard) ──
-    color = color / (color + vec3<f32>(1.0));
+    // ── Tone mapping: ACES filmic (preserves saturation better than Reinhard) ──
+    let a_aces = 2.51;
+    let b_aces = 0.03;
+    let c_aces = 2.43;
+    let d_aces = 0.59;
+    let e_aces = 0.14;
+    color = clamp((color * (a_aces * color + b_aces)) / (color * (c_aces * color + d_aces) + e_aces), vec3<f32>(0.0), vec3<f32>(1.0));
 
     // ── Gamma correction ──
     color = pow(color, vec3<f32>(0.4545));
