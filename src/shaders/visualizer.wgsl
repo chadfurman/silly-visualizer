@@ -8,7 +8,8 @@ struct AudioUniforms {
     seed: f32,
     palette_id: f32,
     resolution: vec2<f32>,
-    _pad2: vec2<f32>,
+    debug_flags: f32,
+    _pad1: f32,
     bands: array<vec4<f32>, 4>,
 }
 
