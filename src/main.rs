@@ -17,14 +17,14 @@ use renderer::{AudioUniforms, Renderer};
 /// Decay rate for beat indicator (drops from 1.0 to 0 over several frames).
 const BEAT_DECAY: f32 = 0.15;
 /// Smoothing factor for audio values (0 = no smoothing, 1 = frozen).
-const SMOOTH_RETAIN: f32 = 0.92;
+const SMOOTH_RETAIN: f32 = 0.95;
 const SMOOTH_INCOMING: f32 = 1.0 - SMOOTH_RETAIN;
 /// Auto-gain: target energy level and limits.
 const TARGET_ENERGY: f32 = 0.05;
-const MAX_GAIN: f32 = 15.0;
+const MAX_GAIN: f32 = 6.0;
 /// Auto-gain attack/release rates (asymmetric: fast attack, slow release).
-const GAIN_ATTACK: f32 = 0.05;
-const GAIN_RELEASE: f32 = 0.003;
+const GAIN_ATTACK: f32 = 0.04;
+const GAIN_RELEASE: f32 = 0.005;
 /// Number of color palettes available in the shader.
 const NUM_PALETTES: u32 = 6;
 const PALETTE_NAMES: [&str; NUM_PALETTES as usize] =

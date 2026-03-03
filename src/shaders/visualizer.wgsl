@@ -229,8 +229,9 @@ fn map(p_in: vec3<f32>) -> f32 {
     let highs = u.highs;
     let energy = u.energy;
 
-    // Rotation driven by time with gentle audio influence
-    let rot_speed = 0.3 + mids * 0.3;
+    // Rotation driven by time, gated by energy so silence = still
+    let motion_gate = clamp(energy * 3.0, 0.05, 1.0);
+    let rot_speed = (0.1 + mids * 0.3) * motion_gate;
     var p = rot_y(t * rot_speed * 0.4) * rot_x(t * rot_speed * 0.25) * p_in;
 
     // ── Space repetition: infinite tunnel / kaleidoscopic ──
@@ -252,7 +253,7 @@ fn map(p_in: vec3<f32>) -> f32 {
     let fp = fold_space(rp * 0.5, fold_iters, fold_scale) * 2.0;
 
     // ── Primary shape: morph between torus and octahedron ──
-    let morph = 0.5 + 0.5 * sin(t * 0.6 + bass * 0.8);
+    let morph = 0.5 + 0.5 * sin(t * 0.6 * motion_gate + bass * 0.8);
     let geo_scale = 1.0 + bass * 0.25;
 
     let torus_r = vec2<f32>(1.2 * geo_scale, 0.3 + bass * 0.08);
@@ -274,7 +275,7 @@ fn map(p_in: vec3<f32>) -> f32 {
     d = smooth_subtraction(d_carve, d, 0.3 + energy * 0.08);
 
     // ── Add pulsing spheres at tunnel repetitions ──
-    let pulse = 0.3 + 0.1 * sin(t * 2.0 + bass * PI);
+    let pulse = 0.3 + 0.1 * sin(t * 2.0 * motion_gate + bass * PI);
     let sp = p;
     let srp_z = wmod(sp.z + t * 0.8, rep_z) - rep_z * 0.5;
     let d_pulse = sd_sphere(vec3<f32>(sp.x, sp.y, srp_z), pulse);
@@ -356,13 +357,15 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let beat = u.beat;
 
     // ── Camera setup: orbiting camera ──
+    // Motion scales with energy so silence = near-stillness
+    let motion = clamp(energy * 3.0, 0.05, 1.0);
     let seed = u.seed;
-    let cam_dist = 5.0 - bass * 0.4;
-    let cam_angle_y = t * 0.2 + mids * 0.1;
-    let cam_angle_x = sin(t * 0.15) * 0.4;
+    let cam_dist = 5.0 - bass * 0.3;
+    let cam_angle_y = t * 0.2 * motion + mids * 0.1;
+    let cam_angle_x = sin(t * 0.15) * 0.3 * motion;
     var ro = vec3<f32>(
         cam_dist * sin(cam_angle_y) * cos(cam_angle_x),
-        cam_dist * sin(cam_angle_x) + sin(t * 0.3) * 0.5,
+        cam_dist * sin(cam_angle_x) + sin(t * 0.3) * 0.3 * motion,
         cam_dist * cos(cam_angle_y) * cos(cam_angle_x),
     );
     // Seed offset: pressing R jumps to a completely different visual region
