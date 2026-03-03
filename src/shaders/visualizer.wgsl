@@ -312,7 +312,9 @@ fn raymarch(ro: vec3<f32>, rd: vec3<f32>) -> RayResult {
     result.steps = 0;
     result.closest = MAX_DIST;
 
-    var t = 0.0;
+    // Start rays slightly in front of camera to avoid geometry at the camera
+    // origin filling the viewport
+    var t = 1.5;
     for (var i = 0; i < MAX_STEPS; i = i + 1) {
         let p = ro + rd * t;
         let d = map(p);

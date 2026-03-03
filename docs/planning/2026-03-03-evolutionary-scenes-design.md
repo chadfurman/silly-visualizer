@@ -49,10 +49,22 @@ A genome is a flat struct of ~20 `f32` parameters:
 - `orbit_speed`: 0.1–0.5
 - `wobble_amount`: 0.0–1.0
 
+### Audio Routing (5 params)
+
+Each scene can have a different "personality" — which audio inputs drive which visual parameters. These weights control how much each audio band influences geometry vs camera vs color:
+
+- `bass_target`: 0=geometry, 1=camera, 2=color (discrete, mutates rarely)
+- `mids_target`: 0=geometry, 1=camera, 2=color
+- `highs_target`: 0=geometry, 1=camera, 2=color
+- `energy_target`: 0=geometry, 1=camera, 2=color
+- `beat_target`: 0=geometry, 1=camera, 2=color
+
+In the shader, the routing multiplies the audio value into the targeted subsystem. For example, a scene with `bass_target=0` (geometry) would have bass inflate/morph shapes, while `bass_target=1` (camera) would have bass push the camera around instead. This creates fundamentally different scene personalities without changing the underlying SDF.
+
 ### Transition (1 param)
 - `transition_type`: 0=param_interpolation, 1=feedback_melt, 2=both
 
-Total: ~31 f32 parameters. Passed to shader as second uniform buffer.
+Total: ~36 f32 parameters. Passed to shader as second uniform buffer.
 
 ## Part 3: Multi-Generational Lineage
 
