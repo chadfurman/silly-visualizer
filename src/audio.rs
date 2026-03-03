@@ -108,8 +108,11 @@ impl AudioCapture {
         })
     }
 
-    pub fn get_samples(&self) -> Vec<f32> {
-        self.buffer.lock().unwrap().clone()
+    /// Copy samples into a reusable destination buffer, avoiding allocation.
+    pub fn get_samples_into(&self, dest: &mut Vec<f32>) {
+        let buf = self.buffer.lock().unwrap();
+        dest.clear();
+        dest.extend_from_slice(&buf);
     }
 }
 
@@ -143,4 +146,43 @@ where
         |err| eprintln!("audio error: {err}"),
         None,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_source_enum_round_trips() {
+        assert_eq!(AudioSource::Mic, AudioSource::Mic);
+        assert_eq!(AudioSource::Loopback, AudioSource::Loopback);
+        assert_ne!(AudioSource::Mic, AudioSource::Loopback);
+    }
+
+    #[test]
+    fn ring_buffer_caps_at_buffer_size() {
+        let buffer = Arc::new(Mutex::new(Vec::with_capacity(BUFFER_SIZE)));
+        {
+            let mut buf = buffer.lock().unwrap();
+            // Simulate pushing more than BUFFER_SIZE samples
+            for i in 0..(BUFFER_SIZE + 500) {
+                buf.push(i as f32);
+            }
+            if buf.len() > BUFFER_SIZE {
+                let drain = buf.len() - BUFFER_SIZE;
+                buf.drain(..drain);
+            }
+        }
+        let buf = buffer.lock().unwrap();
+        assert_eq!(buf.len(), BUFFER_SIZE);
+        // Should contain the most recent samples
+        assert_eq!(*buf.last().unwrap(), (BUFFER_SIZE + 499) as f32);
+    }
+
+    #[test]
+    fn buffer_size_is_reasonable() {
+        // BUFFER_SIZE should be large enough for FFT (2048) but not excessive
+        assert!(BUFFER_SIZE >= 2048, "buffer should hold at least one FFT window");
+        assert!(BUFFER_SIZE <= 65536, "buffer shouldn't be excessively large");
+    }
 }

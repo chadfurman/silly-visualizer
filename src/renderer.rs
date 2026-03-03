@@ -3,6 +3,21 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+/// WGSL uniform buffer alignment: arrays must have element stride that is a
+/// multiple of 16 bytes. We use `array<vec4<f32>, 4>` in WGSL which maps to
+/// `[f32; 16]` in Rust (same contiguous layout). The `_pad2` field aligns
+/// `bands` to a 16-byte boundary (offset 48).
+///
+/// Any changes to this struct MUST be mirrored in `shaders/visualizer.wgsl`.
+const _: () = assert!(
+    std::mem::size_of::<AudioUniforms>() == 112,
+    "AudioUniforms size must be 112 bytes to match WGSL layout"
+);
+const _: () = assert!(
+    std::mem::size_of::<AudioUniforms>() % 16 == 0,
+    "AudioUniforms size must be a multiple of 16 for uniform buffer alignment"
+);
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct AudioUniforms {
@@ -13,8 +28,9 @@ pub struct AudioUniforms {
     pub energy: f32,
     pub beat: f32,
     pub seed: f32,
-    pub _pad: f32,
+    pub palette_id: f32,
     pub resolution: [f32; 2],
+    pub _pad2: [f32; 2],
     pub bands: [f32; 16],
 }
 
@@ -28,8 +44,9 @@ impl Default for AudioUniforms {
             energy: 0.0,
             beat: 0.0,
             seed: 0.0,
-            _pad: 0.0,
+            palette_id: 0.0,
             resolution: [0.0, 0.0],
+            _pad2: [0.0; 2],
             bands: [0.0; 16],
         }
     }
@@ -137,9 +154,11 @@ impl Renderer {
         let width = size.width.max(1);
         let height = size.height.max(1);
 
-        let surface_config = surface
+        let mut surface_config = surface
             .get_default_config(&adapter, width, height)
             .expect("surface is not supported by the adapter");
+        // Need COPY_DST so we can copy from feedback textures to the surface
+        surface_config.usage |= wgpu::TextureUsages::COPY_DST;
         surface.configure(&device, &surface_config);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -476,5 +495,65 @@ impl Renderer {
 
         // Swap ping-pong index for next frame
         self.frame_index = 1 - self.frame_index;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_uniforms_size_is_112_bytes() {
+        assert_eq!(std::mem::size_of::<AudioUniforms>(), 112);
+    }
+
+    #[test]
+    fn audio_uniforms_size_is_16_byte_aligned() {
+        assert_eq!(std::mem::size_of::<AudioUniforms>() % 16, 0);
+    }
+
+    #[test]
+    fn audio_uniforms_field_offsets_match_wgsl() {
+        // These offsets must match the WGSL struct in visualizer.wgsl.
+        // If this test breaks, the shader will too.
+        use std::mem::offset_of;
+        assert_eq!(offset_of!(AudioUniforms, time), 0);
+        assert_eq!(offset_of!(AudioUniforms, bass), 4);
+        assert_eq!(offset_of!(AudioUniforms, mids), 8);
+        assert_eq!(offset_of!(AudioUniforms, highs), 12);
+        assert_eq!(offset_of!(AudioUniforms, energy), 16);
+        assert_eq!(offset_of!(AudioUniforms, beat), 20);
+        assert_eq!(offset_of!(AudioUniforms, seed), 24);
+        assert_eq!(offset_of!(AudioUniforms, palette_id), 28);
+        assert_eq!(offset_of!(AudioUniforms, resolution), 32);
+        assert_eq!(offset_of!(AudioUniforms, _pad2), 40);
+        // bands must be at offset 48 (multiple of 16) for WGSL array<vec4<f32>, 4>
+        assert_eq!(offset_of!(AudioUniforms, bands), 48);
+        assert_eq!(offset_of!(AudioUniforms, bands) % 16, 0);
+    }
+
+    #[test]
+    fn audio_uniforms_is_pod_castable() {
+        let u = AudioUniforms::default();
+        let bytes: &[u8] = bytemuck::bytes_of(&u);
+        assert_eq!(bytes.len(), 112);
+        // Verify round-trip
+        let u2: &AudioUniforms = bytemuck::from_bytes(bytes);
+        assert_eq!(u2.time, 0.0);
+        assert_eq!(u2.bands, [0.0; 16]);
+    }
+
+    #[test]
+    fn audio_uniforms_default_is_zeroed() {
+        let u = AudioUniforms::default();
+        assert_eq!(u.time, 0.0);
+        assert_eq!(u.bass, 0.0);
+        assert_eq!(u.mids, 0.0);
+        assert_eq!(u.highs, 0.0);
+        assert_eq!(u.energy, 0.0);
+        assert_eq!(u.beat, 0.0);
+        assert_eq!(u.seed, 0.0);
+        assert_eq!(u.resolution, [0.0, 0.0]);
+        assert_eq!(u.bands, [0.0; 16]);
     }
 }
