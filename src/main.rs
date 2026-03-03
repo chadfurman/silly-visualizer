@@ -17,7 +17,7 @@ use renderer::{AudioUniforms, Renderer};
 /// Decay rate for beat indicator (drops from 1.0 to 0 over several frames).
 const BEAT_DECAY: f32 = 0.15;
 /// Smoothing factor for audio values (0 = no smoothing, 1 = frozen).
-const SMOOTH_RETAIN: f32 = 0.93;
+const SMOOTH_RETAIN: f32 = 0.90;
 const SMOOTH_INCOMING: f32 = 1.0 - SMOOTH_RETAIN;
 /// Auto-gain: target energy level and limits.
 const TARGET_ENERGY: f32 = 0.05;

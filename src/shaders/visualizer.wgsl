@@ -229,14 +229,19 @@ fn map(p_in: vec3<f32>) -> f32 {
     let highs = u.highs;
     let energy = u.energy;
 
-    // Rotation driven by time, gated by energy so silence = still
-    let motion_gate = clamp(energy * 12.0, 0.05, 1.0);
+    // Combined audio level — use the loudest band so speech (mids-dominant)
+    // drives geometry just as well as music (bass-dominant)
+    let audio_level = max(max(bass, mids), max(highs, energy));
+
+    // Motion and presence scale with audio — silence = void
+    let motion_gate = clamp(audio_level * 8.0, 0.05, 1.0);
+
+    // Rotation driven by time, gated by audio
     let rot_speed = (0.1 + mids * 0.3) * motion_gate;
     var p = rot_y(t * rot_speed * 0.4) * rot_x(t * rot_speed * 0.25) * p_in;
 
     // ── Space repetition: infinite tunnel / kaleidoscopic ──
-    // Domain repetition along Z for tunnel effect
-    let rep_z = 4.0 - bass * 0.3;
+    let rep_z = 4.0 - audio_level * 0.3;
     var rp = p;
     rp.z = wmod(p.z + t * 0.8 * motion_gate, rep_z) - rep_z * 0.5;
 
@@ -248,26 +253,27 @@ fn map(p_in: vec3<f32>) -> f32 {
     rp = vec3<f32>(r_xy * cos(folded_angle), r_xy * sin(folded_angle), rp.z);
 
     // ── Iterative space folding (Mandelbox-like) ──
-    let fold_iters = i32(clamp(1.0 + energy * 2.0, 1.0, 4.0));
-    let fold_scale = 1.5 + energy * 0.3;
+    let fold_iters = i32(clamp(1.0 + audio_level * 3.0, 1.0, 4.0));
+    let fold_scale = 1.5 + audio_level * 0.4;
     let fp = fold_space(rp * 0.5, fold_iters, fold_scale) * 2.0;
 
     // ── Primary shape: morph between torus and octahedron ──
-    let morph = 0.5 + 0.5 * sin(t * 0.6 * motion_gate + bass * 0.8);
-    let geo_scale = 1.0 + bass * 0.25;
+    // audio_level drives shape size so speech (mids) inflates geometry too
+    let morph = 0.5 + 0.5 * sin(t * 0.6 * motion_gate + audio_level * 0.8);
+    let geo_scale = 1.0 + audio_level * 0.4;
 
-    let torus_r = vec2<f32>(1.2 * geo_scale, 0.3 + bass * 0.08);
+    let torus_r = vec2<f32>(1.2 * geo_scale, 0.3 + audio_level * 0.12);
     let d_torus = sd_torus(rp, torus_r);
     let d_octa = sd_octahedron(rp, 1.0 * geo_scale);
     let d_primary = mix(d_torus, d_octa, morph);
 
     // ── Secondary shapes from folded space ──
-    let d_folded_sphere = sd_sphere(fp, 0.8 + highs * 0.2);
-    let d_folded_box = sd_box(fp, vec3<f32>(0.5 + mids * 0.1));
+    let d_folded_sphere = sd_sphere(fp, 0.8 + highs * 0.2 + mids * 0.15);
+    let d_folded_box = sd_box(fp, vec3<f32>(0.5 + mids * 0.2));
     let d_secondary = smooth_union(d_folded_sphere, d_folded_box, 0.5);
 
     // ── Combine primary and secondary ──
-    var d = smooth_union(d_primary, d_secondary * 0.6, 0.8 + bass * 0.15);
+    var d = smooth_union(d_primary, d_secondary * 0.6, 0.8 + audio_level * 0.2);
 
     // ── Carved detail: subtract rotating octahedra ──
     let carve_p = rot_z(t * 1.2 * motion_gate + mids * 0.5) * rp;
@@ -275,16 +281,15 @@ fn map(p_in: vec3<f32>) -> f32 {
     d = smooth_subtraction(d_carve, d, 0.3 + energy * 0.08);
 
     // ── Add pulsing spheres at tunnel repetitions ──
-    let pulse = 0.3 + 0.1 * sin(t * 2.0 * motion_gate + bass * PI);
+    let pulse = 0.3 + 0.15 * sin(t * 2.0 * motion_gate + audio_level * PI);
     let sp = p;
     let srp_z = wmod(sp.z + t * 0.8 * motion_gate, rep_z) - rep_z * 0.5;
     let d_pulse = sd_sphere(vec3<f32>(sp.x, sp.y, srp_z), pulse);
     d = smooth_union(d, d_pulse, 0.6);
 
     // Fade geometry to empty space when silent — no input = void
-    // energy * 25 means energy > 0.04 = full geometry (speech is ~0.02-0.05)
-    let presence = clamp(energy * 25.0, 0.0, 1.0);
-    return d + (1.0 - presence) * 20.0;
+    let presence = clamp(audio_level * 15.0, 0.0, 1.0);
+    return d + (1.0 - presence) * 15.0;
 }
 
 // ─── Normal Estimation ──────────────────────────────────────────────────────
@@ -317,7 +322,7 @@ fn raymarch(ro: vec3<f32>, rd: vec3<f32>) -> RayResult {
 
     // Start rays slightly in front of camera to avoid geometry at the camera
     // origin filling the viewport
-    var t = 1.5;
+    var t = 0.5;
     for (var i = 0; i < MAX_STEPS; i = i + 1) {
         let p = ro + rd * t;
         let d = map(p);
@@ -362,11 +367,12 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let beat = u.beat;
 
     // ── Camera setup: orbiting camera ──
-    // Motion scales with energy so silence = near-stillness
-    let motion = clamp(energy * 12.0, 0.05, 1.0);
+    // Use max audio band for motion so speech drives camera too
+    let audio_peak = max(max(bass, mids), max(highs, energy));
+    let motion = clamp(audio_peak * 8.0, 0.05, 1.0);
     let seed = u.seed;
-    let cam_dist = 5.0 - bass * 0.3;
-    let cam_angle_y = t * 0.2 * motion + mids * 0.1;
+    let cam_dist = 5.0 - audio_peak * 0.3;
+    let cam_angle_y = t * 0.2 * motion + mids * 0.15;
     let cam_angle_x = sin(t * 0.15) * 0.3 * motion;
     var ro = vec3<f32>(
         cam_dist * sin(cam_angle_y) * cos(cam_angle_x),
