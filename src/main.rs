@@ -1,10 +1,16 @@
+mod renderer;
+
+use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
+use renderer::Renderer;
+
 struct App {
-    window: Option<Window>,
+    window: Option<Arc<Window>>,
+    renderer: Option<Renderer>,
 }
 
 impl ApplicationHandler for App {
@@ -12,13 +18,29 @@ impl ApplicationHandler for App {
         if self.window.is_none() {
             let attrs = Window::default_attributes()
                 .with_title("silly visualizer");
-            self.window = Some(event_loop.create_window(attrs).unwrap());
+            let window = Arc::new(event_loop.create_window(attrs).unwrap());
+            let renderer = Renderer::new(window.clone());
+            self.window = Some(window);
+            self.renderer = Some(renderer);
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.resize(size.width, size.height);
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(renderer) = &self.renderer {
+                    renderer.render();
+                }
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
             _ => {}
         }
     }
@@ -27,6 +49,9 @@ impl ApplicationHandler for App {
 fn main() {
     env_logger::init();
     let event_loop = EventLoop::new().unwrap();
-    let mut app = App { window: None };
+    let mut app = App {
+        window: None,
+        renderer: None,
+    };
     event_loop.run_app(&mut app).unwrap();
 }
