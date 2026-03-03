@@ -38,8 +38,67 @@ pub struct Renderer {
     surface_config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    bind_group_layout: wgpu::BindGroupLayout,
+    bind_groups: [wgpu::BindGroup; 2],
+    feedback_textures: [wgpu::Texture; 2],
+    feedback_views: [wgpu::TextureView; 2],
+    sampler: wgpu::Sampler,
+    frame_index: usize,
     start_time: Instant,
+}
+
+fn create_feedback_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    label: &str,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+fn create_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform_buffer: &wgpu::Buffer,
+    prev_frame_view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    label: &str,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(prev_frame_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }
 
 impl Renderer {
@@ -95,32 +154,93 @@ impl Renderer {
                     | wgpu::BufferUsages::COPY_DST,
             });
 
-        // Create bind group layout: one uniform buffer at group 0, binding 0, visible to fragment
+        // Create feedback textures for ping-pong rendering
+        let tex_a = create_feedback_texture(
+            &device,
+            width,
+            height,
+            surface_config.format,
+            "feedback texture A",
+        );
+        let tex_b = create_feedback_texture(
+            &device,
+            width,
+            height,
+            surface_config.format,
+            "feedback texture B",
+        );
+        let view_a = tex_a.create_view(&wgpu::TextureViewDescriptor::default());
+        let view_b = tex_b.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Create sampler for previous frame sampling
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("feedback sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Bind group layout: uniform buffer + prev frame texture + sampler
         let bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("audio uniforms bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                label: Some("feedback bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float {
+                                filterable: true,
+                            },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(
+                            wgpu::SamplerBindingType::Filtering,
+                        ),
+                        count: None,
+                    },
+                ],
             });
 
-        // Create bind group referencing the buffer
-        let bind_group =
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("audio uniforms bind group"),
-                layout: &bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                }],
-            });
+        // Two bind groups for ping-pong: each uses the OTHER texture as prev_frame
+        // bind_groups[0]: renders to tex_a, reads from tex_b (prev)
+        // bind_groups[1]: renders to tex_b, reads from tex_a (prev)
+        let bind_group_0 = create_bind_group(
+            &device,
+            &bind_group_layout,
+            &uniform_buffer,
+            &view_b,
+            &sampler,
+            "bind group 0 (prev=B)",
+        );
+        let bind_group_1 = create_bind_group(
+            &device,
+            &bind_group_layout,
+            &uniform_buffer,
+            &view_a,
+            &sampler,
+            "bind group 1 (prev=A)",
+        );
 
         // Pipeline layout now includes our bind group layout
         let pipeline_layout =
@@ -176,7 +296,12 @@ impl Renderer {
             surface_config,
             render_pipeline,
             uniform_buffer,
-            bind_group,
+            bind_group_layout,
+            bind_groups: [bind_group_0, bind_group_1],
+            feedback_textures: [tex_a, tex_b],
+            feedback_views: [view_a, view_b],
+            sampler,
+            frame_index: 0,
             start_time: Instant::now(),
         }
     }
@@ -186,6 +311,50 @@ impl Renderer {
             self.surface_config.width = width;
             self.surface_config.height = height;
             self.surface.configure(&self.device, &self.surface_config);
+
+            // Recreate feedback textures at new size
+            let tex_a = create_feedback_texture(
+                &self.device,
+                width,
+                height,
+                self.surface_config.format,
+                "feedback texture A",
+            );
+            let tex_b = create_feedback_texture(
+                &self.device,
+                width,
+                height,
+                self.surface_config.format,
+                "feedback texture B",
+            );
+            let view_a =
+                tex_a.create_view(&wgpu::TextureViewDescriptor::default());
+            let view_b =
+                tex_b.create_view(&wgpu::TextureViewDescriptor::default());
+
+            // Recreate bind groups with new texture views
+            self.bind_groups = [
+                create_bind_group(
+                    &self.device,
+                    &self.bind_group_layout,
+                    &self.uniform_buffer,
+                    &view_b,
+                    &self.sampler,
+                    "bind group 0 (prev=B)",
+                ),
+                create_bind_group(
+                    &self.device,
+                    &self.bind_group_layout,
+                    &self.uniform_buffer,
+                    &view_a,
+                    &self.sampler,
+                    "bind group 1 (prev=A)",
+                ),
+            ];
+
+            self.feedback_textures = [tex_a, tex_b];
+            self.feedback_views = [view_a, view_b];
+            self.frame_index = 0;
         }
     }
 
@@ -197,7 +366,7 @@ impl Renderer {
         );
     }
 
-    pub fn render(&self, uniforms: &mut AudioUniforms) {
+    pub fn render(&mut self, uniforms: &mut AudioUniforms) {
         // Fill in time and resolution
         uniforms.time = self.start_time.elapsed().as_secs_f32();
         uniforms.resolution = [
@@ -225,7 +394,11 @@ impl Renderer {
             }
         };
 
-        let view = output.texture.create_view(&Default::default());
+        // Determine which texture to render to (curr) and which is previous
+        // frame_index=0: render to tex_a, read prev from tex_b -> use bind_groups[0]
+        // frame_index=1: render to tex_b, read prev from tex_a -> use bind_groups[1]
+        let curr_idx = self.frame_index;
+        let curr_view = &self.feedback_views[curr_idx];
 
         let mut encoder = self
             .device
@@ -233,13 +406,14 @@ impl Renderer {
                 label: Some("render encoder"),
             });
 
+        // Pass 1: Render scene to offscreen feedback texture (with prev frame as input)
         {
             let mut render_pass =
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("render pass"),
+                    label: Some("offscreen render pass"),
                     color_attachments: &[Some(
                         wgpu::RenderPassColorAttachment {
-                            view: &view,
+                            view: curr_view,
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -260,11 +434,26 @@ impl Renderer {
                 });
 
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_bind_group(0, &self.bind_groups[curr_idx], &[]);
             render_pass.draw(0..3, 0..1);
         }
 
+        // Copy offscreen texture to surface for display
+        let surface_texture = &output.texture;
+        encoder.copy_texture_to_texture(
+            self.feedback_textures[curr_idx].as_image_copy(),
+            surface_texture.as_image_copy(),
+            wgpu::Extent3d {
+                width: self.surface_config.width,
+                height: self.surface_config.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
+        // Swap ping-pong index for next frame
+        self.frame_index = 1 - self.frame_index;
     }
 }

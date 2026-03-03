@@ -60,7 +60,7 @@ impl ApplicationHandler for App {
                         self.uniforms.bands = result.bands;
                     }
                 }
-                if let Some(renderer) = &self.renderer {
+                if let Some(renderer) = &mut self.renderer {
                     renderer.render(&mut self.uniforms);
                 }
                 if let Some(window) = &self.window {

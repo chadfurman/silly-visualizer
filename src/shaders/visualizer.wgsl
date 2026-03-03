@@ -10,6 +10,8 @@ struct AudioUniforms {
 }
 
 @group(0) @binding(0) var<uniform> u: AudioUniforms;
+@group(0) @binding(1) var prev_frame: texture_2d<f32>;
+@group(0) @binding(2) var prev_sampler: sampler;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
@@ -411,6 +413,13 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     // ── Palette shift on beat: nudge hues ──
     let beat_shift = beat * 0.2;
     color = mix(color, color.gbr, beat_shift);
+
+    // ── Feedback: blend with previous frame for melting trail effect ──
+    let screen_uv = pos.xy / u.resolution;
+    let drift = vec2<f32>(sin(u.time * 0.1) * 0.002, cos(u.time * 0.13) * 0.002);
+    let prev_color = textureSample(prev_frame, prev_sampler, screen_uv + drift);
+    let blend_factor = 0.15 + beat * 0.3;
+    color = mix(prev_color.rgb, color, blend_factor);
 
     // ── Vignette ──
     let vignette_uv = pos.xy / u.resolution - 0.5;
