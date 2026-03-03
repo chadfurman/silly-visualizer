@@ -18,6 +18,8 @@ pub struct AnalysisResult {
     pub highs: f32,
     pub energy: f32,
     pub beat: f32,
+    /// Compact spectral profile: [bass, mids, highs, energy, beat]
+    pub spectral_profile: [f32; 5],
 }
 
 impl AudioAnalyzer {
@@ -101,6 +103,7 @@ impl AudioAnalyzer {
             highs,
             energy,
             beat,
+            spectral_profile: [bass, mids, highs, energy, beat],
         }
     }
 }

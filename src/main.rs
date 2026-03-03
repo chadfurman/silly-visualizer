@@ -1,6 +1,9 @@
 mod analysis;
 mod audio;
+mod genome;
+mod lineage;
 mod renderer;
+mod scene;
 
 use std::sync::Arc;
 use std::time::Instant;
