@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -12,6 +12,8 @@ pub struct AudioUniforms {
     pub highs: f32,
     pub energy: f32,
     pub beat: f32,
+    pub seed: f32,
+    pub _pad: f32,
     pub resolution: [f32; 2],
     pub bands: [f32; 16],
 }
@@ -25,6 +27,8 @@ impl Default for AudioUniforms {
             highs: 0.0,
             energy: 0.0,
             beat: 0.0,
+            seed: 0.0,
+            _pad: 0.0,
             resolution: [0.0, 0.0],
             bands: [0.0; 16],
         }
@@ -45,6 +49,7 @@ pub struct Renderer {
     sampler: wgpu::Sampler,
     frame_index: usize,
     start_time: Instant,
+    seed: f32,
 }
 
 fn create_feedback_texture(
@@ -303,6 +308,7 @@ impl Renderer {
             sampler,
             frame_index: 0,
             start_time: Instant::now(),
+            seed: 0.0,
         }
     }
 
@@ -366,9 +372,19 @@ impl Renderer {
         );
     }
 
+    pub fn randomize_seed(&mut self) {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        self.seed = (nanos as f32) / 1_000_000_000.0;
+        log::info!("randomized seed: {:.4}", self.seed);
+    }
+
     pub fn render(&mut self, uniforms: &mut AudioUniforms) {
         // Fill in time and resolution
         uniforms.time = self.start_time.elapsed().as_secs_f32();
+        uniforms.seed = self.seed;
         uniforms.resolution = [
             self.surface_config.width as f32,
             self.surface_config.height as f32,

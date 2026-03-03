@@ -5,6 +5,8 @@ struct AudioUniforms {
     highs: f32,
     energy: f32,
     beat: f32,
+    seed: f32,
+    _pad: f32,
     resolution: vec2<f32>,
     bands: array<f32, 16>,
 }
@@ -290,14 +292,17 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let beat = u.beat;
 
     // ── Camera setup: orbiting camera ──
+    let seed = u.seed;
     let cam_dist = 5.0 - bass * 1.5;
     let cam_angle_y = t * 0.2 + mids * 0.5;
     let cam_angle_x = sin(t * 0.15) * 0.4;
-    let ro = vec3<f32>(
+    var ro = vec3<f32>(
         cam_dist * sin(cam_angle_y) * cos(cam_angle_x),
         cam_dist * sin(cam_angle_x) + sin(t * 0.3) * 0.5,
         cam_dist * cos(cam_angle_y) * cos(cam_angle_x),
     );
+    // Seed offset: pressing R jumps to a completely different visual region
+    ro += vec3<f32>(seed * 100.0, seed * 73.0, seed * 37.0);
     let look_at = vec3<f32>(0.0, 0.0, 0.0);
     let forward = normalize(look_at - ro);
     let right = normalize(cross(forward, vec3<f32>(0.0, 1.0, 0.0)));
