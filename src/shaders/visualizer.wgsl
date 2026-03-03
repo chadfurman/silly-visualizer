@@ -230,7 +230,7 @@ fn map(p_in: vec3<f32>) -> f32 {
     let energy = u.energy;
 
     // Rotation driven by time, gated by energy so silence = still
-    let motion_gate = clamp(energy * 3.0, 0.05, 1.0);
+    let motion_gate = clamp(energy * 12.0, 0.05, 1.0);
     let rot_speed = (0.1 + mids * 0.3) * motion_gate;
     var p = rot_y(t * rot_speed * 0.4) * rot_x(t * rot_speed * 0.25) * p_in;
 
@@ -282,8 +282,9 @@ fn map(p_in: vec3<f32>) -> f32 {
     d = smooth_union(d, d_pulse, 0.6);
 
     // Fade geometry to empty space when silent — no input = void
-    let presence = clamp(energy * 4.0, 0.0, 1.0);
-    return d + (1.0 - presence) * 50.0;
+    // energy * 25 means energy > 0.04 = full geometry (speech is ~0.02-0.05)
+    let presence = clamp(energy * 25.0, 0.0, 1.0);
+    return d + (1.0 - presence) * 20.0;
 }
 
 // ─── Normal Estimation ──────────────────────────────────────────────────────
@@ -362,7 +363,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
     // ── Camera setup: orbiting camera ──
     // Motion scales with energy so silence = near-stillness
-    let motion = clamp(energy * 3.0, 0.05, 1.0);
+    let motion = clamp(energy * 12.0, 0.05, 1.0);
     let seed = u.seed;
     let cam_dist = 5.0 - bass * 0.3;
     let cam_angle_y = t * 0.2 * motion + mids * 0.1;
