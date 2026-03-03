@@ -238,7 +238,7 @@ fn map(p_in: vec3<f32>) -> f32 {
     // Domain repetition along Z for tunnel effect
     let rep_z = 4.0 - bass * 0.3;
     var rp = p;
-    rp.z = wmod(p.z + t * 0.8, rep_z) - rep_z * 0.5;
+    rp.z = wmod(p.z + t * 0.8 * motion_gate, rep_z) - rep_z * 0.5;
 
     // Kaleidoscopic angular folding in XY
     let fold_angle = PI / (3.0 + mids * 0.8);
@@ -270,18 +270,20 @@ fn map(p_in: vec3<f32>) -> f32 {
     var d = smooth_union(d_primary, d_secondary * 0.6, 0.8 + bass * 0.15);
 
     // ── Carved detail: subtract rotating octahedra ──
-    let carve_p = rot_z(t * 1.2 + mids * 0.5) * rp;
+    let carve_p = rot_z(t * 1.2 * motion_gate + mids * 0.5) * rp;
     let d_carve = sd_octahedron(carve_p, 0.6 + highs * 0.2);
     d = smooth_subtraction(d_carve, d, 0.3 + energy * 0.08);
 
     // ── Add pulsing spheres at tunnel repetitions ──
     let pulse = 0.3 + 0.1 * sin(t * 2.0 * motion_gate + bass * PI);
     let sp = p;
-    let srp_z = wmod(sp.z + t * 0.8, rep_z) - rep_z * 0.5;
+    let srp_z = wmod(sp.z + t * 0.8 * motion_gate, rep_z) - rep_z * 0.5;
     let d_pulse = sd_sphere(vec3<f32>(sp.x, sp.y, srp_z), pulse);
     d = smooth_union(d, d_pulse, 0.6);
 
-    return d;
+    // Fade geometry to empty space when silent — no input = void
+    let presence = clamp(energy * 4.0, 0.0, 1.0);
+    return d + (1.0 - presence) * 50.0;
 }
 
 // ─── Normal Estimation ──────────────────────────────────────────────────────
