@@ -257,13 +257,13 @@ fn combine(d1: f32, d2: f32, comb_type: f32, smoothness: f32) -> f32 {
 
 // Returns total audio contribution routed to a given target
 // Targets: 0=geometry, 1=camera, 2=color
-fn audio_for_target(target: f32) -> f32 {
+fn audio_for_target(tgt: f32) -> f32 {
     var total = 0.0;
-    if (abs(scene.audio_routing.x - target) < 0.5) { total += u.bass; }
-    if (abs(scene.audio_routing.y - target) < 0.5) { total += u.mids; }
-    if (abs(scene.audio_routing.z - target) < 0.5) { total += u.highs; }
-    if (abs(scene.audio_routing.w - target) < 0.5) { total += u.energy; }
-    if (abs(scene.transition.x - target) < 0.5) { total += u.beat; }
+    if (abs(scene.audio_routing.x - tgt) < 0.5) { total += u.bass; }
+    if (abs(scene.audio_routing.y - tgt) < 0.5) { total += u.mids; }
+    if (abs(scene.audio_routing.z - tgt) < 0.5) { total += u.highs; }
+    if (abs(scene.audio_routing.w - tgt) < 0.5) { total += u.energy; }
+    if (abs(scene.transition.x - tgt) < 0.5) { total += u.beat; }
     return total;
 }
 
