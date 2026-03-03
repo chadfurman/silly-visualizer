@@ -147,6 +147,17 @@ impl App {
         if let Some(window) = &self.window {
             window.set_title(&format!("silly visualizer | {fps:.0} FPS | {frame_ms:.1} ms"));
         }
+        log::info!(
+            "[debug] bass={:.2} mids={:.2} highs={:.2} energy={:.2} beat={:.0} | shapes=[{},{},{},{}] gain={:.1}x | mode={}",
+            self.uniforms.bass, self.uniforms.mids, self.uniforms.highs,
+            self.uniforms.energy, self.uniforms.beat,
+            self.lineage.child.shape_types[0] as u32,
+            self.lineage.child.shape_types[1] as u32,
+            self.lineage.child.shape_types[2] as u32,
+            self.lineage.child.shape_types[3] as u32,
+            self.audio_state.auto_gain,
+            self.debug_visual_mode,
+        );
         self.frame_count = 0;
         self.fps_update_time = now;
     }
