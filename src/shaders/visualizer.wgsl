@@ -327,7 +327,7 @@ fn map(p_in: vec3<f32>) -> f32 {
                 scene.combinators[1].y + geo_audio * 0.1);
 
     // Fade geometry to void when silent
-    let presence = clamp(audio_level * 15.0, 0.0, 1.0);
+    let presence = clamp(audio_level * 25.0, 0.0, 1.0);
     return d + (1.0 - presence) * 15.0;
 }
 
@@ -454,7 +454,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         let luminance = dot(base_color, vec3<f32>(0.299, 0.587, 0.114));
         let saturated = mix(vec3<f32>(luminance), base_color, 1.2 + color_audio * 0.8);
         let brightness = 1.0 + color_audio * 0.5;
-        let lit = saturated * (0.25 + diff * 0.75) + spec * 0.5 * (1.0 + color_audio * 2.0);
+        let lit = saturated * (0.40 + diff * 0.60) + spec * 0.5 * (1.0 + color_audio * 2.0);
         let fog = exp(-result.total_dist * 0.05);
         color = lit * brightness * fog;
     }
@@ -490,8 +490,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let prev_srgb = vec3<f32>(prev_r, prev_g, prev_b);
     let prev_linear = pow(prev_srgb, vec3<f32>(2.2));
     // Fade the previous frame down so trails decay instead of accumulating
-    let trail_decay = 0.85;
-    let blend_factor = 0.45 + beat * 0.25;
+    let trail_decay = 0.55;
+    let blend_factor = 0.70 + beat * 0.20;
     color = mix(prev_linear * trail_decay, color, blend_factor);
 
     // ── Vignette (softer) ──
