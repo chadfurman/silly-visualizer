@@ -6,11 +6,12 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use renderer::Renderer;
+use renderer::{AudioUniforms, Renderer};
 
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    uniforms: AudioUniforms,
 }
 
 impl ApplicationHandler for App {
@@ -35,7 +36,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = &self.renderer {
-                    renderer.render();
+                    renderer.render(&mut self.uniforms);
                 }
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -52,6 +53,7 @@ fn main() {
     let mut app = App {
         window: None,
         renderer: None,
+        uniforms: AudioUniforms::default(),
     };
     event_loop.run_app(&mut app).unwrap();
 }
