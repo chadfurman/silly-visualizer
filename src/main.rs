@@ -10,7 +10,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use analysis::AudioAnalyzer;
-use audio::AudioCapture;
+use audio::{AudioCapture, AudioSource};
 use renderer::{AudioUniforms, Renderer};
 
 struct App {
@@ -20,6 +20,7 @@ struct App {
     analyzer: Option<AudioAnalyzer>,
     uniforms: AudioUniforms,
     sensitivity: f32,
+    audio_source: AudioSource,
 }
 
 impl ApplicationHandler for App {
@@ -33,9 +34,17 @@ impl ApplicationHandler for App {
             self.renderer = Some(renderer);
         }
         if self.audio.is_none() {
-            self.audio = Some(AudioCapture::new_default_input());
+            self.audio = match self.audio_source {
+                AudioSource::Mic => AudioCapture::new_default_input().ok(),
+                AudioSource::Loopback => AudioCapture::new_loopback()
+                    .or_else(|e| {
+                        log::warn!("loopback failed ({e}), falling back to mic");
+                        AudioCapture::new_default_input()
+                    })
+                    .ok(),
+            };
             self.analyzer = Some(AudioAnalyzer::new(2048));
-            log::info!("audio capture started");
+            log::info!("audio capture started ({:?})", self.audio_source);
         }
     }
 
@@ -74,7 +83,23 @@ impl ApplicationHandler for App {
                     match event.logical_key.as_ref() {
                         Key::Named(NamedKey::Escape) => event_loop.exit(),
                         Key::Named(NamedKey::Space) => {
-                            log::info!("toggle audio source (not yet implemented)");
+                            self.audio_source = match self.audio_source {
+                                AudioSource::Mic => AudioSource::Loopback,
+                                AudioSource::Loopback => AudioSource::Mic,
+                            };
+                            // Drop current capture, create new one with toggled source
+                            self.audio = None;
+                            self.audio = match self.audio_source {
+                                AudioSource::Mic => AudioCapture::new_default_input().ok(),
+                                AudioSource::Loopback => AudioCapture::new_loopback()
+                                    .or_else(|e| {
+                                        log::warn!("loopback failed ({e}), falling back to mic");
+                                        self.audio_source = AudioSource::Mic;
+                                        AudioCapture::new_default_input()
+                                    })
+                                    .ok(),
+                            };
+                            log::info!("audio source: {:?}", self.audio_source);
                         }
                         Key::Character("f") => {
                             if let Some(window) = &self.window {
@@ -119,6 +144,7 @@ fn main() {
         analyzer: None,
         uniforms: AudioUniforms::default(),
         sensitivity: 1.0,
+        audio_source: AudioSource::Mic,
     };
     event_loop.run_app(&mut app).unwrap();
 }
