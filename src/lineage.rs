@@ -58,6 +58,14 @@ impl Lineage {
         blended
     }
 
+    /// Advance by picking a random preset and applying light mutation.
+    /// The crossfade system handles smooth transitions from current → new.
+    #[allow(dead_code)] // Will be called from app.rs in Task 3
+    pub fn advance_from_preset(&mut self, rng: &mut impl Rng) {
+        let new_child = crate::presets::random_preset_mutated(rng);
+        self.shift_generations(new_child);
+    }
+
     fn shift_generations(&mut self, new_child: Genome) {
         self.great_grandparent = self.grandparent.take();
         self.grandparent = self.parent.take();
@@ -172,5 +180,26 @@ mod tests {
         let child = Genome::random(&mut rng);
         let pulled = lineage.apply_ancestral_pull(child.clone());
         assert_eq!(pulled, child);
+    }
+
+    #[test]
+    fn advance_from_preset_produces_valid_genome() {
+        let mut rng = test_rng();
+        let initial = crate::presets::random_preset_mutated(&mut rng);
+        let mut lineage = Lineage::new(initial);
+        for _ in 0..20 {
+            lineage.advance_from_preset(&mut rng);
+            assert!(lineage.child.is_valid());
+        }
+    }
+
+    #[test]
+    fn advance_from_preset_changes_child() {
+        let mut rng = test_rng();
+        let initial = crate::presets::random_preset_mutated(&mut rng);
+        let mut lineage = Lineage::new(initial);
+        let original = lineage.child.clone();
+        lineage.advance_from_preset(&mut rng);
+        assert_ne!(lineage.child, original);
     }
 }
