@@ -9,8 +9,10 @@ struct AudioUniforms {
     palette_id: f32,
     resolution: vec2<f32>,
     debug_flags: f32,
-    _pad1: f32,
+    slow_energy: f32,
     bands: array<vec4<f32>, 4>,
+    // extra: [beat_accumulator, beat_pulse, pad, pad]
+    extra: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> u: AudioUniforms;
@@ -23,6 +25,7 @@ struct SceneUniforms {
     folding: vec4<f32>,
     camera: vec4<f32>,
     audio_routing: vec4<f32>,
+    // transition: [beat_target, transition_type, distortion_type, distortion_amount]
     transition: vec4<f32>,
 }
 
@@ -207,6 +210,14 @@ fn wmod3(x: vec3<f32>, y: vec3<f32>) -> vec3<f32> {
     return x - floor(x / y) * y;
 }
 
+// ─── Hash for pseudo-noise ──────────────────────────────────────────────────
+
+fn hash3(p: vec3<f32>) -> f32 {
+    var q = fract(p * 0.1031);
+    q += dot(q, q.zyx + 31.32);
+    return fract((q.x + q.y) * q.z);
+}
+
 // ─── Space Folding (Mandelbox-inspired) ─────────────────────────────────────
 
 fn fold_space(p_in: vec3<f32>, iterations: i32, scale: f32) -> vec3<f32> {
@@ -268,16 +279,75 @@ fn audio_for_target(tgt: f32) -> f32 {
     return total;
 }
 
+// ─── Surface Distortion (Task 4) ────────────────────────────────────────────
+// Audio-reactive displacement applied in world space so the distortion pattern
+// stays fixed while shapes rotate — like iron filings on a vibrating surface.
+
+fn surface_distortion(p: vec3<f32>) -> f32 {
+    let dist_amount = scene.transition.w; // distortion_amount from genome
+    if (dist_amount < 0.001) {
+        return 0.0;
+    }
+
+    let dist_type = i32(scene.transition.z); // distortion_type from genome
+    let beat_pulse = u.extra.y;
+    let bass = u.bass;
+    let mids = u.mids;
+    let highs = u.highs;
+
+    // Bass — large-scale undulation
+    let bass_wave = sin(p.x * 1.5 + u.time * 0.5) * sin(p.y * 1.5 + u.time * 0.3) * bass * 0.08;
+
+    // Mids — medium undulation
+    let mids_wave = sin(p.x * 5.0 + u.time * 0.8) * cos(p.z * 5.0 + u.time * 0.6) * mids * 0.04;
+
+    // Highs — type-dependent character
+    var highs_wave = 0.0;
+    let r = length(p);
+    switch (dist_type) {
+        case 0: {
+            // Ripple: concentric rings
+            highs_wave = sin(r * 15.0 + u.time * 2.0) * highs * 0.03;
+        }
+        case 1: {
+            // Spike: sharp peaks
+            let s = sin(p.x * 10.0 + u.time) * sin(p.y * 10.0 - u.time * 0.7) * sin(p.z * 10.0 + u.time * 0.5);
+            highs_wave = abs(s * s * s) * highs * 0.06;
+        }
+        case 2: {
+            // Fuzz: hash-based pseudo-noise
+            highs_wave = (hash3(p * 8.0 + u.time * 0.3) - 0.5) * highs * 0.05;
+        }
+        default: {
+            // Mixed: ripple + spike combo
+            let ripple = sin(r * 12.0 + u.time * 1.5) * 0.5;
+            let spike = abs(sin(p.x * 8.0 + u.time) * sin(p.z * 8.0 - u.time * 0.6));
+            highs_wave = (ripple + spike) * highs * 0.03;
+        }
+    }
+
+    // Beat pulse — momentary burst
+    let pulse_wave = beat_pulse * 0.05 * sin(r * 8.0 + u.time * 3.0);
+
+    return (bass_wave + mids_wave + highs_wave + pulse_wave) * dist_amount;
+}
+
 // ─── Scene SDF ──────────────────────────────────────────────────────────────
 
 fn map(p_in: vec3<f32>) -> f32 {
     let t = u.time;
+    let beat_accum = u.extra.x;
 
-    // Genome-driven structural params (stable — not audio-modulated)
+    // Genome-driven structural params
     let rep_z = scene.folding.w;
     let kal_folds = max(scene.camera.x, 2.0);
-    let fold_iters = i32(clamp(scene.folding.x, 1.0, 5.0));
-    let fold_scale = scene.folding.y;
+
+    // Task 8: Fractal fold complexity drift — beat_accumulator drives fold iterations
+    let fold_scale = scene.folding.y + beat_accum * 0.3;
+    var iter_boost = 0.0;
+    if (beat_accum > 0.5) { iter_boost = 1.0; }
+    if (beat_accum > 0.8) { iter_boost = 2.0; }
+    let fold_iters = i32(clamp(scene.folding.x + iter_boost, 1.0, 5.0));
 
     // Rotation: steady orbit from genome rot_speed values
     let avg_rot = (scene.shapes[0].w + scene.shapes[1].w) * 0.5;
@@ -317,6 +387,9 @@ fn map(p_in: vec3<f32>) -> f32 {
     var d = combine(d0, d1, scene.combinators[0].x, scene.combinators[0].y);
     d = combine(d, d2, scene.combinators[0].z, scene.combinators[0].w);
     d = combine(d, d3, scene.combinators[1].x, scene.combinators[1].y);
+
+    // Task 4: Surface distortion — applied in world space (p_in)
+    d += surface_distortion(p_in);
 
     return d;
 }
@@ -437,6 +510,9 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let highs = u.highs;
     let energy = u.energy;
     let beat = u.beat;
+    let beat_pulse = u.extra.y;
+    let beat_accum = u.extra.x;
+    let mood = clamp(u.slow_energy * 20.0, 0.0, 1.0);
 
     // ── Camera setup: smooth orbiting camera (no audio jitter) ──
     let seed = u.seed;
@@ -457,7 +533,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let focal = 1.5;
     let rd = normalize(forward * focal + right * uv.x + up * uv.y);
 
-    // ── Single raymarch (was 3 per pixel for chromatic aberration) ──
+    // ── Single raymarch ──
     let result = raymarch(ro, rd);
 
     // Mode 3: Normals visualization
@@ -485,56 +561,93 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         cos(t * 0.7) * 2.0,
     );
 
-    // ── Coloring: genome-routed audio drives color modulation ──
+    // ── Task 5: Color system overhaul — mood-driven coloring ──
     let color_audio = audio_for_target(2.0);
     var color = vec3<f32>(0.0);
 
     if (result.dist < SURF_DIST * 2.0) {
         let hit_p = ro + rd * result.total_dist;
         let n = calc_normal(hit_p);
-        let base_color = palette_shifted(
-            result.total_dist * 0.15 + t * 0.08 + dot(n, vec3<f32>(0.3, 0.6, 0.1)),
-            color_audio * 0.6 + beat * 0.4
-        );
+
+        // Mood blends two palette evaluations: warm + cool
+        let palette_t = result.total_dist * 0.15 + t * 0.08 + dot(n, vec3<f32>(0.3, 0.6, 0.1));
+        let warm_color = palette_shifted(palette_t, color_audio * 0.4);
+        let cool_color = palette_shifted(palette_t + 0.33, color_audio * 0.4);
+        let gradient_blend = mix(0.4, 0.15, mood); // calm: more blended, energetic: more distinct
+        let base_color = mix(warm_color, cool_color, gradient_blend);
+
+        // Lighting with mood-driven contrast and specular
         let light_dir = normalize(light_pos - hit_p);
         let diff = max(dot(n, light_dir), 0.0);
-        let spec = pow(max(dot(reflect(-light_dir, n), -rd), 0.0), 16.0 + color_audio * 32.0);
+        let spec_power = mix(16.0, 64.0, mood);
+        let spec = pow(max(dot(reflect(-light_dir, n), -rd), 0.0), spec_power);
+
+        // Contrast scales with mood
+        let contrast = mix(1.0, 1.6, mood);
         let luminance = dot(base_color, vec3<f32>(0.299, 0.587, 0.114));
-        let saturated = mix(vec3<f32>(luminance), base_color, 1.2 + color_audio * 0.8);
-        let brightness = 1.0 + color_audio * 0.5;
-        let lit = saturated * (0.40 + diff * 0.60) + spec * 0.5 * (1.0 + color_audio * 2.0);
+        let saturated = mix(vec3<f32>(luminance), base_color, contrast);
+
+        // Electric accent at high energy — cyan/magenta mixed in
+        let accent = mix(vec3<f32>(0.0, 1.0, 1.0), vec3<f32>(1.0, 0.0, 1.0), sin(palette_t * 3.0) * 0.5 + 0.5);
+        let accent_mix = mood * 0.15;
+
+        let brightness = 1.0 + color_audio * 0.3;
+        let lit = mix(saturated, accent, accent_mix) * (0.40 + diff * 0.60)
+                  + spec * 0.5 * (1.0 + mood * 2.0);
         let fog = exp(-result.total_dist * 0.05);
         color = lit * brightness * fog;
     }
 
-    // ── Glow from close misses ──
-    let glow_intensity = 0.03 / (result.closest + 0.01);
-    let glow_color = palette(t * 0.1 + result.total_dist * 0.05 + color_audio);
-    var glow = glow_color * glow_intensity * (0.4 + color_audio * 1.5);
+    // ── Task 6: Glow surge with ring pulses ──
+    // Inner glow — proximity-based, amplified by beat_pulse and bass
+    let inner_glow_intensity = 0.03 / (result.closest + 0.01);
+    let inner_glow_color = palette(t * 0.1 + result.total_dist * 0.05 + color_audio);
+    let inner_glow_amp = 0.3 + beat_pulse * 2.0 + bass * 0.8;
+    var glow = inner_glow_color * inner_glow_intensity * inner_glow_amp;
 
-    // Step-based ambient glow (more steps = ray was grazing surfaces)
+    // Outer glow — step-count-based, scales with mood
     let step_glow = f32(result.steps) / f32(MAX_STEPS);
-    let step_color = palette_shifted(step_glow + t * 0.02, color_audio * 0.8);
-    glow = glow + step_color * step_glow * step_glow * 0.6;
+    let outer_glow_color = palette_shifted(step_glow + t * 0.02, color_audio * 0.5);
+    let outer_glow_strength = mix(0.4, 0.8, mood);
+    glow += outer_glow_color * step_glow * step_glow * outer_glow_strength;
 
-    color = color + glow;
+    // Bass surge — multiplies total glow
+    glow *= 1.0 + bass * 0.8;
 
-    // ── Palette shift on beat: nudge hues ──
-    let beat_shift = beat * 0.25;
+    color += glow;
+
+    // ── Ring pulses on beats ──
+    let ring_center = length(uv);
+    // Ring 1: expands from center as beat_pulse decays
+    let ring1_radius = (1.0 - beat_pulse) * 1.5;
+    let ring1_dist = abs(ring_center - ring1_radius);
+    let ring1 = smoothstep(0.03, 0.0, ring1_dist) * beat_pulse;
+    // Ring 2: second concentric ring at 70% phase, 40% intensity
+    let ring2_radius = (1.0 - beat_pulse * 0.7) * 1.5;
+    let ring2_dist = abs(ring_center - ring2_radius);
+    let ring2 = smoothstep(0.03, 0.0, ring2_dist) * beat_pulse * 0.4;
+    let ring_color = palette(t * 0.15 + ring_center);
+    color += ring_color * (ring1 + ring2);
+
+    // ── Task 7: Softened beat effects ──
+    // Palette shift on beat: gentle hue nudge using beat_pulse
+    let beat_shift = beat_pulse * 0.10;
     color = mix(color, color.gbr, beat_shift);
 
-    // ── Feedback: blend with previous frame for melting trail effect ──
+    // ── Task 7: Mood-driven adaptive feedback ──
     if (debug_mode != 1) {
         let screen_uv = pos.xy / u.resolution;
         let drift = vec2<f32>(sin(u.time * 0.1) * 0.003, cos(u.time * 0.13) * 0.003);
-        let ca_offset = beat * 0.015;
+        // Softened chromatic aberration using beat_pulse
+        let ca_offset = beat_pulse * 0.008;
         let prev_r = textureSample(prev_frame, prev_sampler, screen_uv + drift + vec2<f32>(ca_offset, 0.0)).r;
         let prev_g = textureSample(prev_frame, prev_sampler, screen_uv + drift).g;
         let prev_b = textureSample(prev_frame, prev_sampler, screen_uv + drift - vec2<f32>(ca_offset, 0.0)).b;
         let prev_srgb = vec3<f32>(prev_r, prev_g, prev_b);
         let prev_linear = pow(prev_srgb, vec3<f32>(2.2));
-        let trail_decay = 0.55;
-        let blend_factor = 0.70 + beat * 0.20;
+        // Calm: more smearing. Energetic: crisper (glow/rings compensate).
+        let trail_decay = mix(0.65, 0.50, mood);
+        let blend_factor = mix(0.65, 0.78, mood) + beat_pulse * 0.10;
         color = mix(prev_linear * trail_decay, color, blend_factor);
     }
 

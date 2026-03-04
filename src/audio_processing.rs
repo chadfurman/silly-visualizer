@@ -18,11 +18,20 @@ const NOISE_GATE: f32 = 0.0001;
 pub struct AudioState {
     pub peak_energy: f32,
     pub auto_gain: f32,
+    pub slow_energy: f32,
+    pub beat_accumulator: f32,
+    pub beat_pulse: f32,
 }
 
 impl AudioState {
     pub fn new() -> Self {
-        Self { peak_energy: 0.01, auto_gain: 1.0 }
+        Self {
+            peak_energy: 0.01,
+            auto_gain: 1.0,
+            slow_energy: 0.0,
+            beat_accumulator: 0.0,
+            beat_pulse: 0.0,
+        }
     }
 }
 
@@ -67,6 +76,29 @@ pub fn apply_smoothing(
     uniforms.mids = uniforms.mids * SMOOTH_RETAIN + result.mids * scale;
     uniforms.highs = uniforms.highs * SMOOTH_RETAIN + result.highs * scale;
     uniforms.energy = uniforms.energy * SMOOTH_RETAIN + result.energy * scale;
+}
+
+pub fn update_envelopes(uniforms: &mut AudioUniforms, state: &mut AudioState, dt: f32) {
+    // Slow energy: 7s EMA of current energy
+    let alpha = (dt / 7.0).min(1.0);
+    state.slow_energy += (uniforms.energy - state.slow_energy) * alpha;
+
+    // Beat accumulator: +0.1 on beat, exponential decay with 4s tau, capped at 1.0
+    if uniforms.beat >= 1.0 {
+        state.beat_accumulator = (state.beat_accumulator + 0.1).min(1.0);
+    }
+    state.beat_accumulator *= (-dt / 4.0).exp();
+
+    // Beat pulse: snap to 1.0 on beat, exponential decay with 0.3s tau
+    if uniforms.beat >= 1.0 {
+        state.beat_pulse = 1.0;
+    }
+    state.beat_pulse *= (-dt / 0.3).exp();
+
+    // Write to uniforms
+    uniforms.slow_energy = state.slow_energy;
+    uniforms.extra[0] = state.beat_accumulator;
+    uniforms.extra[1] = state.beat_pulse;
 }
 
 pub fn apply_beat(uniforms: &mut AudioUniforms, beat: f32) {
@@ -181,4 +213,88 @@ mod tests {
         assert_eq!(u.beat, 0.0);
     }
 
+    #[test]
+    fn slow_energy_converges_to_signal() {
+        let mut u = AudioUniforms::default();
+        let mut state = AudioState::new();
+        u.energy = 0.5;
+        // 7s EMA needs ~4x tau to converge (~28s = 1750 frames at 60fps)
+        for _ in 0..2000 {
+            update_envelopes(&mut u, &mut state, 0.016);
+        }
+        assert!((state.slow_energy - 0.5).abs() < 0.05, "slow_energy should converge, got {}", state.slow_energy);
+    }
+
+    #[test]
+    fn slow_energy_decays_in_silence() {
+        let mut u = AudioUniforms::default();
+        let mut state = AudioState::new();
+        state.slow_energy = 0.5;
+        u.energy = 0.0;
+        for _ in 0..2000 {
+            update_envelopes(&mut u, &mut state, 0.016);
+        }
+        assert!(state.slow_energy < 0.05, "slow_energy should decay, got {}", state.slow_energy);
+    }
+
+    #[test]
+    fn beat_accumulator_increments_on_beat() {
+        let mut u = AudioUniforms::default();
+        let mut state = AudioState::new();
+        u.beat = 1.0;
+        update_envelopes(&mut u, &mut state, 0.016);
+        assert!(state.beat_accumulator > 0.0);
+    }
+
+    #[test]
+    fn beat_accumulator_decays_without_beats() {
+        let mut u = AudioUniforms::default();
+        let mut state = AudioState::new();
+        state.beat_accumulator = 0.5;
+        u.beat = 0.0;
+        // 4s tau needs ~16s to decay to near zero (~1000 frames at 60fps)
+        for _ in 0..1000 {
+            update_envelopes(&mut u, &mut state, 0.016);
+        }
+        assert!(state.beat_accumulator < 0.05, "accumulator should decay, got {}", state.beat_accumulator);
+    }
+
+    #[test]
+    fn beat_accumulator_caps_at_one() {
+        let mut u = AudioUniforms::default();
+        let mut state = AudioState::new();
+        u.beat = 1.0;
+        for _ in 0..100 {
+            update_envelopes(&mut u, &mut state, 0.001);
+        }
+        assert!(state.beat_accumulator <= 1.0, "accumulator should be capped, got {}", state.beat_accumulator);
+    }
+
+    #[test]
+    fn beat_pulse_snaps_and_decays() {
+        let mut u = AudioUniforms::default();
+        let mut state = AudioState::new();
+        u.beat = 1.0;
+        update_envelopes(&mut u, &mut state, 0.016);
+        assert!((state.beat_pulse - 1.0).abs() < 0.1, "pulse should snap near 1.0");
+        u.beat = 0.0;
+        for _ in 0..100 {
+            update_envelopes(&mut u, &mut state, 0.016);
+        }
+        assert!(state.beat_pulse < 0.1, "pulse should decay, got {}", state.beat_pulse);
+    }
+
+    #[test]
+    fn envelopes_write_to_uniforms() {
+        let mut u = AudioUniforms::default();
+        let mut state = AudioState::new();
+        state.slow_energy = 0.3;
+        state.beat_accumulator = 0.5;
+        state.beat_pulse = 0.8;
+        u.energy = 0.3;
+        update_envelopes(&mut u, &mut state, 0.016);
+        assert!(u.slow_energy > 0.0);
+        assert!(u.extra[0] > 0.0);
+        assert!(u.extra[1] > 0.0);
+    }
 }

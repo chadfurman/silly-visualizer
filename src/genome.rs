@@ -32,6 +32,7 @@ const KALEIDOSCOPE_FOLDS_RANGE: Range = Range(2.0, 8.0);
 const CAM_DISTANCE_RANGE: Range = Range(3.0, 8.0);
 const ORBIT_SPEED_RANGE: Range = Range(0.1, 0.5);
 const WOBBLE_AMOUNT_RANGE: Range = Range(0.0, 1.0);
+const DISTORTION_AMOUNT_RANGE: Range = Range(0.0, 1.0);
 
 enum FieldKind {
     ContinuousArray(&'static Range, #[allow(dead_code)] usize),
@@ -103,6 +104,8 @@ fn field_descriptors() -> Vec<FieldDescriptor> {
         scalar_field!(disc, AUDIO_TARGET_COUNT, energy_target),
         scalar_field!(disc, AUDIO_TARGET_COUNT, beat_target),
         scalar_field!(disc, 3.0, transition_type),
+        scalar_field!(disc, 4.0, distortion_type),
+        scalar_field!(cont, DISTORTION_AMOUNT_RANGE, distortion_amount),
     ]
 }
 
@@ -112,6 +115,7 @@ fn field_descriptors() -> Vec<FieldDescriptor> {
 /// Discrete parameters (shape types, combinator types, audio routing targets,
 /// transition type) are stored as f32 but take integer values.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
 pub struct Genome {
     pub shape_types: [f32; 4],
     pub shape_scales: [f32; 4],
@@ -133,6 +137,8 @@ pub struct Genome {
     pub energy_target: f32,
     pub beat_target: f32,
     pub transition_type: f32,
+    pub distortion_type: f32,
+    pub distortion_amount: f32,
 }
 
 impl Genome {
@@ -149,7 +155,7 @@ impl Genome {
             folding: [self.fold_iterations, self.fold_scale, self.fold_offset, self.rep_z],
             camera: [self.kaleidoscope_folds, self.cam_distance, self.orbit_speed, self.wobble_amount],
             audio_routing: [self.bass_target, self.mids_target, self.highs_target, self.energy_target],
-            transition: [self.beat_target, self.transition_type, 0.0, 0.0],
+            transition: [self.beat_target, self.transition_type, self.distortion_type, self.distortion_amount],
         }
     }
 

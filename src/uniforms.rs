@@ -1,12 +1,13 @@
 /// WGSL uniform buffer alignment: arrays must have element stride that is a
 /// multiple of 16 bytes. We use `array<vec4<f32>, 4>` in WGSL which maps to
-/// `[f32; 16]` in Rust (same contiguous layout). The `debug_flags` and `_pad1`
+/// `[f32; 16]` in Rust (same contiguous layout). The `debug_flags` and `slow_energy`
 /// fields align `bands` to a 16-byte boundary (offset 48).
+/// `extra` holds slow audio envelopes: [beat_accumulator, beat_pulse, pad, pad].
 ///
 /// Any changes to this struct MUST be mirrored in `shaders/visualizer.wgsl`.
 const _: () = assert!(
-    std::mem::size_of::<AudioUniforms>() == 112,
-    "AudioUniforms size must be 112 bytes to match WGSL layout"
+    std::mem::size_of::<AudioUniforms>() == 128,
+    "AudioUniforms size must be 128 bytes to match WGSL layout"
 );
 const _: () = assert!(
     std::mem::size_of::<AudioUniforms>().is_multiple_of(16),
@@ -26,8 +27,10 @@ pub struct AudioUniforms {
     pub palette_id: f32,
     pub resolution: [f32; 2],
     pub debug_flags: f32,
-    pub _pad1: f32,
+    pub slow_energy: f32,
     pub bands: [f32; 16],
+    /// Slow audio envelopes: [beat_accumulator, beat_pulse, pad, pad]
+    pub extra: [f32; 4],
 }
 
 impl Default for AudioUniforms {
@@ -43,8 +46,9 @@ impl Default for AudioUniforms {
             palette_id: 0.0,
             resolution: [0.0, 0.0],
             debug_flags: 0.0,
-            _pad1: 0.0,
+            slow_energy: 0.0,
             bands: [0.0; 16],
+            extra: [0.0; 4],
         }
     }
 }
@@ -76,7 +80,7 @@ pub struct SceneUniforms {
     pub camera: [f32; 4],                // 16 bytes (offset 112)
     /// Audio routing: [bass_target, mids_target, highs_target, energy_target]
     pub audio_routing: [f32; 4],         // 16 bytes (offset 128)
-    /// Transition: [beat_target, transition_type, transition_boost, pad]
+    /// Transition: [beat_target, transition_type, distortion_type, distortion_amount]
     pub transition: [f32; 4],            // 16 bytes (offset 144)
 }
 
@@ -98,8 +102,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn audio_uniforms_size_is_112_bytes() {
-        assert_eq!(std::mem::size_of::<AudioUniforms>(), 112);
+    fn audio_uniforms_size_is_128_bytes() {
+        assert_eq!(std::mem::size_of::<AudioUniforms>(), 128);
     }
 
     #[test]
@@ -120,19 +124,22 @@ mod tests {
         assert_eq!(offset_of!(AudioUniforms, palette_id), 28);
         assert_eq!(offset_of!(AudioUniforms, resolution), 32);
         assert_eq!(offset_of!(AudioUniforms, debug_flags), 40);
-        assert_eq!(offset_of!(AudioUniforms, _pad1), 44);
+        assert_eq!(offset_of!(AudioUniforms, slow_energy), 44);
         assert_eq!(offset_of!(AudioUniforms, bands), 48);
         assert_eq!(offset_of!(AudioUniforms, bands) % 16, 0);
+        assert_eq!(offset_of!(AudioUniforms, extra), 112);
+        assert_eq!(offset_of!(AudioUniforms, extra) % 16, 0);
     }
 
     #[test]
     fn audio_uniforms_is_pod_castable() {
         let u = AudioUniforms::default();
         let bytes: &[u8] = bytemuck::bytes_of(&u);
-        assert_eq!(bytes.len(), 112);
+        assert_eq!(bytes.len(), 128);
         let u2: &AudioUniforms = bytemuck::from_bytes(bytes);
         assert_eq!(u2.time, 0.0);
         assert_eq!(u2.bands, [0.0; 16]);
+        assert_eq!(u2.extra, [0.0; 4]);
     }
 
     #[test]
@@ -177,7 +184,9 @@ mod tests {
         assert_eq!(u.seed, 0.0);
         assert_eq!(u.resolution, [0.0, 0.0]);
         assert_eq!(u.debug_flags, 0.0);
+        assert_eq!(u.slow_energy, 0.0);
         assert_eq!(u.bands, [0.0; 16]);
+        assert_eq!(u.extra, [0.0; 4]);
     }
 
     #[test]

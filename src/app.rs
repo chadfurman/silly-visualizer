@@ -185,6 +185,8 @@ impl App {
             &self.sample_buf, analyzer,
             &mut self.uniforms, &mut self.audio_state, self.sensitivity,
         );
+        let dt = self.frame_dt();
+        audio_processing::update_envelopes(&mut self.uniforms, &mut self.audio_state, dt);
         self.check_evolution(&result.spectral_profile);
     }
 
@@ -199,6 +201,8 @@ impl App {
             &chunk, analyzer,
             &mut self.uniforms, &mut self.audio_state, self.sensitivity,
         );
+        let dt = self.frame_dt();
+        audio_processing::update_envelopes(&mut self.uniforms, &mut self.audio_state, dt);
     }
 
     fn check_evolution(&mut self, spectral_profile: &[f32; 5]) {

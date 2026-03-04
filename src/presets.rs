@@ -34,6 +34,8 @@ pub static PRESETS: [Genome; PRESET_COUNT] = [
         energy_target: 1.0,
         beat_target: 1.0,
         transition_type: 0.0,
+        distortion_type: 0.0,   // ripple
+        distortion_amount: 0.5,
     },
     // 1: Crystal Cave — octahedron + box, Mandelbox folding
     Genome {
@@ -57,6 +59,8 @@ pub static PRESETS: [Genome; PRESET_COUNT] = [
         energy_target: 0.0,
         beat_target: 2.0,
         transition_type: 1.0,
+        distortion_type: 1.0,   // spike
+        distortion_amount: 0.6,
     },
     // 2: Neon Bloom — dual spheres, smooth union, fast rotation
     Genome {
@@ -80,6 +84,8 @@ pub static PRESETS: [Genome; PRESET_COUNT] = [
         energy_target: 0.0,
         beat_target: 2.0,
         transition_type: 2.0,
+        distortion_type: 0.0,   // ripple
+        distortion_amount: 0.4,
     },
     // 3: Kaleidoscope — all 4 shapes, high kaleidoscope folds
     Genome {
@@ -103,6 +109,8 @@ pub static PRESETS: [Genome; PRESET_COUNT] = [
         energy_target: 1.0,
         beat_target: 0.0,
         transition_type: 0.0,
+        distortion_type: 3.0,   // mixed
+        distortion_amount: 0.3,
     },
     // 4: Void Pulse — torus + octahedron, subtraction, beat-reactive
     Genome {
@@ -126,6 +134,8 @@ pub static PRESETS: [Genome; PRESET_COUNT] = [
         energy_target: 1.0,
         beat_target: 1.0,
         transition_type: 1.0,
+        distortion_type: 1.0,   // spike
+        distortion_amount: 0.7,
     },
     // 5: Morphing Geometry — box + sphere intersection, slow
     Genome {
@@ -149,6 +159,8 @@ pub static PRESETS: [Genome; PRESET_COUNT] = [
         energy_target: 0.0,
         beat_target: 2.0,
         transition_type: 0.0,
+        distortion_type: 2.0,   // fuzz
+        distortion_amount: 0.3,
     },
     // 6: Infinite Corridor — high Z-rep, low cam distance
     Genome {
@@ -172,6 +184,8 @@ pub static PRESETS: [Genome; PRESET_COUNT] = [
         energy_target: 0.0,
         beat_target: 1.0,
         transition_type: 2.0,
+        distortion_type: 0.0,   // ripple
+        distortion_amount: 0.4,
     },
     // 7: Cosmic Web — high fold iterations, all audio → color
     Genome {
@@ -195,6 +209,8 @@ pub static PRESETS: [Genome; PRESET_COUNT] = [
         energy_target: 2.0,
         beat_target: 0.0,
         transition_type: 0.0,
+        distortion_type: 3.0,   // mixed
+        distortion_amount: 0.5,
     },
 ];
 
