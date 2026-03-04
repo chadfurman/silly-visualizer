@@ -326,8 +326,8 @@ fn surface_distortion(p: vec3<f32>) -> f32 {
         }
     }
 
-    // Beat pulse — momentary burst
-    let pulse_wave = beat_pulse * 0.05 * sin(r * 8.0 + u.time * 3.0);
+    // Beat pulse — gentle swell (scaled down so it doesn't pop)
+    let pulse_wave = beat_pulse * 0.02 * sin(r * 6.0 + u.time * 1.5);
 
     return (bass_wave + mids_wave + highs_wave + pulse_wave) * dist_amount;
 }
@@ -342,12 +342,10 @@ fn map(p_in: vec3<f32>) -> f32 {
     let rep_z = scene.folding.w;
     let kal_folds = max(scene.camera.x, 2.0);
 
-    // Task 8: Fractal fold complexity drift — beat_accumulator drives fold iterations
-    let fold_scale = scene.folding.y + beat_accum * 0.3;
-    var iter_boost = 0.0;
-    if (beat_accum > 0.5) { iter_boost = 1.0; }
-    if (beat_accum > 0.8) { iter_boost = 2.0; }
-    let fold_iters = i32(clamp(scene.folding.x + iter_boost, 1.0, 5.0));
+    // Fractal fold complexity drift — beat_accumulator smoothly drives fold scale
+    // No hard iteration jumps — just continuous scale drift for smooth transitions
+    let fold_scale = scene.folding.y + beat_accum * 0.4;
+    let fold_iters = i32(clamp(scene.folding.x, 1.0, 5.0));
 
     // Rotation: steady orbit from genome rot_speed values
     let avg_rot = (scene.shapes[0].w + scene.shapes[1].w) * 0.5;
@@ -598,11 +596,11 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         color = lit * brightness * fog;
     }
 
-    // ── Task 6: Glow surge with ring pulses ──
-    // Inner glow — proximity-based, amplified by beat_pulse and bass
+    // ── Glow surge ──
+    // Inner glow — proximity-based, gently amplified by accumulator and bass
     let inner_glow_intensity = 0.03 / (result.closest + 0.01);
     let inner_glow_color = palette(t * 0.1 + result.total_dist * 0.05 + color_audio);
-    let inner_glow_amp = 0.3 + beat_pulse * 2.0 + bass * 0.8;
+    let inner_glow_amp = 0.3 + beat_accum * 0.6 + bass * 0.5;
     var glow = inner_glow_color * inner_glow_intensity * inner_glow_amp;
 
     // Outer glow — step-count-based, scales with mood
@@ -611,43 +609,42 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let outer_glow_strength = mix(0.4, 0.8, mood);
     glow += outer_glow_color * step_glow * step_glow * outer_glow_strength;
 
-    // Bass surge — multiplies total glow
-    glow *= 1.0 + bass * 0.8;
+    // Bass surge — gentle multiplier
+    glow *= 1.0 + bass * 0.4;
 
     color += glow;
 
-    // ── Ring pulses on beats ──
-    let ring_center = length(uv);
-    // Ring 1: expands from center as beat_pulse decays
-    let ring1_radius = (1.0 - beat_pulse) * 1.5;
-    let ring1_dist = abs(ring_center - ring1_radius);
-    let ring1 = smoothstep(0.03, 0.0, ring1_dist) * beat_pulse;
-    // Ring 2: second concentric ring at 70% phase, 40% intensity
-    let ring2_radius = (1.0 - beat_pulse * 0.7) * 1.5;
-    let ring2_dist = abs(ring_center - ring2_radius);
-    let ring2 = smoothstep(0.03, 0.0, ring2_dist) * beat_pulse * 0.4;
-    let ring_color = palette(t * 0.15 + ring_center);
-    color += ring_color * (ring1 + ring2);
+    // ── Ring pulse — only during sustained rhythm (accumulator-gated) ──
+    // Single soft ring, slow expansion, subtle — not on every beat
+    if (beat_accum > 0.4) {
+        let ring_center = length(uv);
+        let ring_strength = (beat_accum - 0.4) * 1.67; // ramps 0→1 as accum goes 0.4→1.0
+        let ring_radius = beat_accum * 1.2; // grows with sustained rhythm
+        let ring_dist = abs(ring_center - ring_radius);
+        let ring = smoothstep(0.05, 0.0, ring_dist) * ring_strength * 0.3;
+        let ring_color = palette(t * 0.15 + ring_center);
+        color += ring_color * ring;
+    }
 
-    // ── Task 7: Softened beat effects ──
-    // Palette shift on beat: gentle hue nudge using beat_pulse
-    let beat_shift = beat_pulse * 0.10;
+    // ── Softened beat effects ──
+    // Very gentle hue nudge driven by accumulator (sustained rhythm) not individual beats
+    let beat_shift = beat_accum * 0.06;
     color = mix(color, color.gbr, beat_shift);
 
-    // ── Task 7: Mood-driven adaptive feedback ──
+    // ── Mood-driven adaptive feedback ──
     if (debug_mode != 1) {
         let screen_uv = pos.xy / u.resolution;
         let drift = vec2<f32>(sin(u.time * 0.1) * 0.003, cos(u.time * 0.13) * 0.003);
-        // Softened chromatic aberration using beat_pulse
-        let ca_offset = beat_pulse * 0.008;
+        // Minimal chromatic aberration — driven by accumulator for smooth drift
+        let ca_offset = beat_accum * 0.004;
         let prev_r = textureSample(prev_frame, prev_sampler, screen_uv + drift + vec2<f32>(ca_offset, 0.0)).r;
         let prev_g = textureSample(prev_frame, prev_sampler, screen_uv + drift).g;
         let prev_b = textureSample(prev_frame, prev_sampler, screen_uv + drift - vec2<f32>(ca_offset, 0.0)).b;
         let prev_srgb = vec3<f32>(prev_r, prev_g, prev_b);
         let prev_linear = pow(prev_srgb, vec3<f32>(2.2));
-        // Calm: more smearing. Energetic: crisper (glow/rings compensate).
+        // Calm: more smearing. Energetic: crisper.
         let trail_decay = mix(0.65, 0.50, mood);
-        let blend_factor = mix(0.65, 0.78, mood) + beat_pulse * 0.10;
+        let blend_factor = mix(0.65, 0.78, mood) + beat_accum * 0.05;
         color = mix(prev_linear * trail_decay, color, blend_factor);
     }
 

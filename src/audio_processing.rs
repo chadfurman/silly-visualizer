@@ -83,17 +83,19 @@ pub fn update_envelopes(uniforms: &mut AudioUniforms, state: &mut AudioState, dt
     let alpha = (dt / 7.0).min(1.0);
     state.slow_energy += (uniforms.energy - state.slow_energy) * alpha;
 
-    // Beat accumulator: +0.1 on beat, exponential decay with 4s tau, capped at 1.0
+    // Beat accumulator: +0.05 on beat, exponential decay with 6s tau, capped at 1.0
+    // Builds slowly over sustained rhythm (~20 beats to reach 0.6)
     if uniforms.beat >= 1.0 {
-        state.beat_accumulator = (state.beat_accumulator + 0.1).min(1.0);
+        state.beat_accumulator = (state.beat_accumulator + 0.05).min(1.0);
     }
-    state.beat_accumulator *= (-dt / 4.0).exp();
+    state.beat_accumulator *= (-dt / 6.0).exp();
 
-    // Beat pulse: snap to 1.0 on beat, exponential decay with 0.3s tau
+    // Beat pulse: snap to 1.0 on beat, exponential decay with 0.6s tau
+    // Slower decay = smoother swell rather than staccato flash
     if uniforms.beat >= 1.0 {
         state.beat_pulse = 1.0;
     }
-    state.beat_pulse *= (-dt / 0.3).exp();
+    state.beat_pulse *= (-dt / 0.6).exp();
 
     // Write to uniforms
     uniforms.slow_energy = state.slow_energy;

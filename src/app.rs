@@ -519,14 +519,17 @@ impl ApplicationHandler for App {
 }
 
 fn load_or_create_lineage(rng: &mut impl rand::Rng) -> Lineage {
-    match persistence::load_lineage() {
+    let mut lineage = match persistence::load_lineage() {
         Ok(l) => {
-            log::info!("loaded lineage ({} generations)", l.generation_count());
+            log::info!("loaded lineage ({} generations), advancing to fresh preset", l.generation_count());
             l
         }
         Err(_) => {
             log::info!("starting from curated preset");
             Lineage::new(crate::presets::random_preset_mutated(rng))
         }
-    }
+    };
+    // Always start on a fresh random preset so each session looks different
+    lineage.advance_from_preset(rng);
+    lineage
 }
