@@ -1,5 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
+use screencapturekit::stream::sc_stream::SCStream;
 use std::sync::{Arc, Mutex};
 
 const BUFFER_SIZE: usize = 4096;
@@ -8,11 +9,34 @@ const BUFFER_SIZE: usize = 4096;
 pub enum AudioSource {
     Mic,
     Loopback,
+    SystemAudio,
+}
+
+/// What kind of device a picker entry represents.
+pub enum DeviceKind {
+    Cpal(cpal::Device),
+    SystemAudio,
+}
+
+/// A device entry for the interactive picker.
+pub struct DeviceInfo {
+    pub name: String,
+    pub kind: &'static str,
+    pub device_kind: DeviceKind,
+    pub is_input: bool,
+}
+
+// Fields are never read directly — the enum exists to keep streams alive via RAII.
+#[allow(dead_code)]
+enum StreamHolder {
+    Cpal(Vec<cpal::Stream>),
+    SystemAudio(SCStream),
 }
 
 pub struct AudioCapture {
-    _stream: cpal::Stream,
+    _streams: StreamHolder,
     buffer: Arc<Mutex<Vec<f32>>>,
+    sample_rate: u32,
 }
 
 impl AudioCapture {
@@ -58,11 +82,27 @@ impl AudioCapture {
         Self::build_capture(device, config)
     }
 
+    /// Capture from a device selected by the interactive picker.
+    pub fn new_from_device_info(info: DeviceInfo) -> Result<Self, String> {
+        log::info!("selected device: {} ({})", info.name, info.kind);
+        match info.device_kind {
+            DeviceKind::SystemAudio => Self::new_system_audio(),
+            DeviceKind::Cpal(device) => {
+                let config = if info.is_input {
+                    device.default_input_config()
+                } else {
+                    device.default_output_config()
+                };
+                let config = config.map_err(|e| format!("no config: {e}"))?;
+                Self::build_capture(device, config)
+            }
+        }
+    }
+
     /// Capture from a specific device matched by name substring.
     ///
     /// Useful for selecting virtual audio devices like BlackHole or
     /// Soundflower that route system audio as an input device.
-    #[allow(dead_code)]
     pub fn new_from_device_name(name: &str) -> Result<Self, String> {
         let host = cpal::default_host();
         let device = host
@@ -84,12 +124,25 @@ impl AudioCapture {
         Self::build_capture(device, config)
     }
 
+    /// Capture system audio via ScreenCaptureKit (macOS 12.3+).
+    pub fn new_system_audio() -> Result<Self, String> {
+        let buffer = Arc::new(Mutex::new(Vec::with_capacity(BUFFER_SIZE)));
+        let (stream, rate) =
+            crate::sck_audio::start_system_audio_capture(buffer.clone(), BUFFER_SIZE)?;
+        Ok(Self {
+            _streams: StreamHolder::SystemAudio(stream),
+            buffer,
+            sample_rate: rate,
+        })
+    }
+
     fn build_capture(
         device: cpal::Device,
         config: cpal::SupportedStreamConfig,
     ) -> Result<Self, String> {
         let buffer = Arc::new(Mutex::new(Vec::with_capacity(BUFFER_SIZE)));
         let sample_format = config.sample_format();
+        let rate = config.sample_rate();
         let stream_config: cpal::StreamConfig = config.into();
 
         let stream = match sample_format {
@@ -103,9 +156,30 @@ impl AudioCapture {
         stream.play().map_err(|e| format!("failed to play stream: {e}"))?;
 
         Ok(Self {
-            _stream: stream,
+            _streams: StreamHolder::Cpal(vec![stream]),
             buffer,
+            sample_rate: rate,
         })
+    }
+
+    /// Build capture from multiple selected devices, mixing their streams.
+    pub fn new_from_multi(infos: Vec<DeviceInfo>) -> Result<Self, String> {
+        if infos.is_empty() { return Err("no devices selected".into()); }
+        // If any device is SystemAudio, use SCK (it captures everything).
+        if infos.iter().any(|i| matches!(i.device_kind, DeviceKind::SystemAudio)) {
+            return Self::new_system_audio();
+        }
+        if infos.len() == 1 {
+            return Self::new_from_device_info(infos.into_iter().next().unwrap());
+        }
+        let buffer = Arc::new(Mutex::new(Vec::with_capacity(BUFFER_SIZE)));
+        let rate = first_sample_rate(&infos);
+        let streams = build_multi_streams(&infos, &buffer)?;
+        Ok(Self { _streams: StreamHolder::Cpal(streams), buffer, sample_rate: rate })
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
     }
 
     /// Copy samples into a reusable destination buffer, avoiding allocation.
@@ -116,7 +190,49 @@ impl AudioCapture {
     }
 }
 
-fn device_description(device: &cpal::Device) -> String {
+fn first_sample_rate(infos: &[DeviceInfo]) -> u32 {
+    infos.first()
+        .and_then(|i| {
+            let DeviceKind::Cpal(ref device) = i.device_kind else { return None };
+            if i.is_input { device.default_input_config().ok() }
+            else { device.default_output_config().ok() }
+        })
+        .map(|c| c.sample_rate())
+        .unwrap_or(44100)
+}
+
+fn build_multi_streams(
+    infos: &[DeviceInfo],
+    buffer: &Arc<Mutex<Vec<f32>>>,
+) -> Result<Vec<cpal::Stream>, String> {
+    let mut streams = Vec::new();
+    for info in infos {
+        let DeviceKind::Cpal(ref device) = info.device_kind else { continue };
+        let stream = build_device_stream(device, info.is_input, buffer.clone())?;
+        log::info!("capturing: {} ({})", info.name, info.kind);
+        streams.push(stream);
+    }
+    Ok(streams)
+}
+
+fn build_device_stream(
+    device: &cpal::Device,
+    is_input: bool,
+    buffer: Arc<Mutex<Vec<f32>>>,
+) -> Result<cpal::Stream, String> {
+    let config = if is_input {
+        device.default_input_config()
+    } else {
+        device.default_output_config()
+    }.map_err(|e| format!("config: {e}"))?;
+    let stream_config: cpal::StreamConfig = config.into();
+    let stream = build_stream::<f32>(device, &stream_config, buffer)
+        .map_err(|e| format!("stream: {e}"))?;
+    stream.play().map_err(|e| format!("play: {e}"))?;
+    Ok(stream)
+}
+
+pub(crate) fn device_description(device: &cpal::Device) -> String {
     device
         .description()
         .map(|d| d.to_string())
@@ -156,7 +272,10 @@ mod tests {
     fn audio_source_enum_round_trips() {
         assert_eq!(AudioSource::Mic, AudioSource::Mic);
         assert_eq!(AudioSource::Loopback, AudioSource::Loopback);
+        assert_eq!(AudioSource::SystemAudio, AudioSource::SystemAudio);
         assert_ne!(AudioSource::Mic, AudioSource::Loopback);
+        assert_ne!(AudioSource::Mic, AudioSource::SystemAudio);
+        assert_ne!(AudioSource::Loopback, AudioSource::SystemAudio);
     }
 
     #[test]

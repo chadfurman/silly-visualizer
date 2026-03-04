@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::Rng;
@@ -97,7 +97,7 @@ pub fn load_random_favorite() -> Result<Option<Genome>, String> {
     load_genome_from_file(path).map(Some)
 }
 
-fn list_json_files(dir: &PathBuf) -> Result<Vec<PathBuf>, String> {
+fn list_json_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(fs::read_dir(dir)
         .map_err(|e| format!("failed to read favorites dir: {e}"))?
         .filter_map(|entry| {
@@ -107,7 +107,7 @@ fn list_json_files(dir: &PathBuf) -> Result<Vec<PathBuf>, String> {
         .collect())
 }
 
-fn load_genome_from_file(path: &PathBuf) -> Result<Genome, String> {
+fn load_genome_from_file(path: &Path) -> Result<Genome, String> {
     let json = fs::read_to_string(path)
         .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&json)
@@ -138,7 +138,7 @@ mod tests {
         dir
     }
 
-    fn save_lineage_to(dir: &PathBuf, lineage: &Lineage) -> Result<(), String> {
+    fn save_lineage_to(dir: &Path, lineage: &Lineage) -> Result<(), String> {
         let path = dir.join("lineage.json");
         let serializable = SerializableLineage::from_lineage(lineage);
         let json = serde_json::to_string_pretty(&serializable)
@@ -146,7 +146,7 @@ mod tests {
         fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
     }
 
-    fn load_lineage_from(dir: &PathBuf) -> Result<Lineage, String> {
+    fn load_lineage_from(dir: &Path) -> Result<Lineage, String> {
         let path = dir.join("lineage.json");
         let json = fs::read_to_string(&path)
             .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
@@ -155,7 +155,7 @@ mod tests {
         Ok(serializable.into_lineage())
     }
 
-    fn save_favorite_to(dir: &PathBuf, genome: &Genome, name: &str) -> Result<PathBuf, String> {
+    fn save_favorite_to(dir: &Path, genome: &Genome, name: &str) -> Result<PathBuf, String> {
         let path = dir.join(format!("{name}.json"));
         let json = serde_json::to_string_pretty(genome)
             .map_err(|e| format!("failed to serialize genome: {e}"))?;
@@ -163,7 +163,7 @@ mod tests {
         Ok(path)
     }
 
-    fn load_random_favorite_from(dir: &PathBuf) -> Result<Option<Genome>, String> {
+    fn load_random_favorite_from(dir: &Path) -> Result<Option<Genome>, String> {
         let entries = list_json_files(dir)?;
         if entries.is_empty() {
             return Ok(None);

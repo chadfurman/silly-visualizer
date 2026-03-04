@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 
 const MAGIC: &[u8; 4] = b"SVRX";
 const FORMAT_VERSION: u32 = 1;
@@ -46,7 +46,7 @@ impl AudioRecorder {
         }
     }
 
-    pub fn save(&self, path: &PathBuf) -> Result<(), String> {
+    pub fn save(&self, path: &Path) -> Result<(), String> {
         let mut data = Vec::new();
         data.extend_from_slice(MAGIC);
         data.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
@@ -111,7 +111,7 @@ fn parse_samples(data: &[u8], header: &RecordingHeader) -> Result<Vec<f32>, Stri
 }
 
 impl AudioPlayer {
-    pub fn load(path: &PathBuf) -> Result<Self, String> {
+    pub fn load(path: &Path) -> Result<Self, String> {
         let data = fs::read(path)
             .map_err(|e| format!("failed to read recording: {e}"))?;
         let header = parse_header(&data)?;
@@ -181,6 +181,7 @@ impl AudioPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

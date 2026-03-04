@@ -273,27 +273,19 @@ fn audio_for_target(tgt: f32) -> f32 {
 fn map(p_in: vec3<f32>) -> f32 {
     let t = u.time;
 
-    // Global audio level for fundamental behaviors (motion gate, presence)
-    let audio_level = max(max(u.bass, u.mids), max(u.highs, u.energy));
-    let motion_gate = clamp(audio_level * 8.0, 0.05, 1.0);
-
-    // Audio routed to geometry modulation via genome
-    let geo_audio = audio_for_target(0.0);
-
-    // Genome-driven structural params
-    let rep_z = scene.folding.w - geo_audio * 0.5;
+    // Genome-driven structural params (stable — not audio-modulated)
+    let rep_z = scene.folding.w;
     let kal_folds = max(scene.camera.x, 2.0);
     let fold_iters = i32(clamp(scene.folding.x, 1.0, 5.0));
-    let fold_scale = scene.folding.y + geo_audio * 0.3;
+    let fold_scale = scene.folding.y;
 
-    // Rotation: average rot_speed from active shapes, gated by audio
+    // Rotation: steady orbit from genome rot_speed values
     let avg_rot = (scene.shapes[0].w + scene.shapes[1].w) * 0.5;
-    let rot_speed = (avg_rot + geo_audio * 0.3) * motion_gate;
-    var p = rot_y(t * rot_speed * 0.4) * rot_x(t * rot_speed * 0.25) * p_in;
+    var p = rot_y(t * avg_rot * 0.4) * rot_x(t * avg_rot * 0.25) * p_in;
 
     // ── Space repetition along Z ──
     var rp = p;
-    rp.z = wmod(p.z + t * 0.8 * motion_gate, rep_z) - rep_z * 0.5;
+    rp.z = wmod(p.z + t * 0.8, rep_z) - rep_z * 0.5;
 
     // ── Kaleidoscopic angular folding in XY ──
     if (i32(u.debug_flags) != 2) {
@@ -310,31 +302,23 @@ fn map(p_in: vec3<f32>) -> f32 {
         fp = fold_space(rp * 0.5, fold_iters, fold_scale) * 2.0;
     }
 
-    // Audio-driven size modulation
-    let geo_mod = 1.0 + geo_audio * 0.4;
-
     // ── Evaluate 4 genome-defined shape slots ──
     // Shapes 0-1 in repeated space, shapes 2-3 in folded space
     let d0 = eval_shape(rp + vec3<f32>(0.0, scene.shapes[0].z, 0.0),
-                        scene.shapes[0].x, scene.shapes[0].y * geo_mod);
+                        scene.shapes[0].x, scene.shapes[0].y);
     let d1 = eval_shape(rp + vec3<f32>(0.0, scene.shapes[1].z, 0.0),
-                        scene.shapes[1].x, scene.shapes[1].y * geo_mod);
+                        scene.shapes[1].x, scene.shapes[1].y);
     let d2 = eval_shape(fp + vec3<f32>(0.0, scene.shapes[2].z, 0.0),
-                        scene.shapes[2].x, scene.shapes[2].y * geo_mod);
+                        scene.shapes[2].x, scene.shapes[2].y);
     let d3 = eval_shape(fp + vec3<f32>(0.0, scene.shapes[3].z, 0.0),
-                        scene.shapes[3].x, scene.shapes[3].y * geo_mod);
+                        scene.shapes[3].x, scene.shapes[3].y);
 
     // ── Combine shapes using genome combinators ──
-    var d = combine(d0, d1, scene.combinators[0].x,
-                    scene.combinators[0].y + geo_audio * 0.1);
-    d = combine(d, d2, scene.combinators[0].z,
-                scene.combinators[0].w + geo_audio * 0.1);
-    d = combine(d, d3, scene.combinators[1].x,
-                scene.combinators[1].y + geo_audio * 0.1);
+    var d = combine(d0, d1, scene.combinators[0].x, scene.combinators[0].y);
+    d = combine(d, d2, scene.combinators[0].z, scene.combinators[0].w);
+    d = combine(d, d3, scene.combinators[1].x, scene.combinators[1].y);
 
-    // Fade geometry to void when silent
-    let presence = clamp(audio_level * 25.0, 0.0, 1.0);
-    return d + (1.0 - presence) * 15.0;
+    return d;
 }
 
 // ─── Normal Estimation ──────────────────────────────────────────────────────
@@ -454,17 +438,14 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let energy = u.energy;
     let beat = u.beat;
 
-    // ── Camera setup: genome-driven orbiting camera ──
-    let audio_peak = max(max(bass, mids), max(highs, energy));
-    let motion = clamp(audio_peak * 8.0, 0.05, 1.0);
-    let cam_audio = audio_for_target(1.0);
+    // ── Camera setup: smooth orbiting camera (no audio jitter) ──
     let seed = u.seed;
-    let cam_dist = scene.camera.y - cam_audio * 0.3;
-    let cam_angle_y = t * scene.camera.z * motion + cam_audio * 0.15;
-    let cam_angle_x = sin(t * 0.15) * scene.camera.w * motion;
+    let cam_dist = scene.camera.y;
+    let cam_angle_y = t * scene.camera.z;
+    let cam_angle_x = sin(t * 0.15) * scene.camera.w;
     var ro = vec3<f32>(
         cam_dist * sin(cam_angle_y) * cos(cam_angle_x),
-        cam_dist * sin(cam_angle_x) + sin(t * 0.3) * 0.3 * motion,
+        cam_dist * sin(cam_angle_x) + sin(t * 0.3) * 0.3,
         cam_dist * cos(cam_angle_y) * cos(cam_angle_x),
     );
     // Seed offset: pressing R jumps to a completely different visual region
@@ -473,7 +454,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let forward = normalize(look_at - ro);
     let right = normalize(cross(forward, vec3<f32>(0.0, 1.0, 0.0)));
     let up = cross(right, forward);
-    let focal = 1.5 - energy * 0.1;
+    let focal = 1.5;
     let rd = normalize(forward * focal + right * uv.x + up * uv.y);
 
     // ── Single raymarch (was 3 per pixel for chromatic aberration) ──
@@ -537,10 +518,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     glow = glow + step_color * step_glow * step_glow * 0.6;
 
     color = color + glow;
-
-    // ── Beat flash: sudden bright pulse ──
-    let flash = beat * beat * 0.2;
-    color = color + vec3<f32>(flash);
 
     // ── Palette shift on beat: nudge hues ──
     let beat_shift = beat * 0.25;

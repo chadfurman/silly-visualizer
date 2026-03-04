@@ -34,7 +34,7 @@ impl EvolutionState {
     pub fn new(lineage: Lineage, rng: rand::rngs::SmallRng) -> Self {
         Self {
             lineage,
-            change_detector: ChangeDetector::new(0.08, 8.0),
+            change_detector: ChangeDetector::new(0.12, 30.0),
             crossfade: None,
             rng,
         }
@@ -53,6 +53,7 @@ impl EvolutionState {
         let new = self.lineage.child.clone();
         let mode = CrossfadeMode::from_genome_value(new.transition_type);
         self.crossfade = Some(Crossfade::new(old, new, mode));
+        self.change_detector.randomize_cooldown(&mut self.rng);
         log::info!("scene evolution → preset (gen {})", self.lineage.generation_count());
     }
 

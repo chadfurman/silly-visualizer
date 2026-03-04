@@ -53,8 +53,16 @@ impl ChangeDetector {
             && self.time_since_trigger >= self.cooldown;
         if trigger {
             self.time_since_trigger = 0.0;
+            self.primed = false;
         }
         trigger
+    }
+
+    /// Randomize cooldown: 15-45s with triangle distribution centered at 30s.
+    pub fn randomize_cooldown(&mut self, rng: &mut impl rand::Rng) {
+        let a: f32 = rng.random();
+        let b: f32 = rng.random();
+        self.cooldown = 15.0 + (a + b) * 15.0;
     }
 
     pub fn novelty(&self) -> f32 {
@@ -93,9 +101,9 @@ impl CrossfadeMode {
 
     pub fn duration(&self) -> f32 {
         match self {
-            CrossfadeMode::ParamInterpolation => 4.0,
-            CrossfadeMode::FeedbackMelt => 2.5,
-            CrossfadeMode::Both => 4.0,
+            CrossfadeMode::ParamInterpolation => 6.0,
+            CrossfadeMode::FeedbackMelt => 5.0,
+            CrossfadeMode::Both => 6.0,
         }
     }
 }
@@ -243,7 +251,7 @@ mod tests {
             if cf.advance(0.1) { break; }
             if steps > 100 { panic!("crossfade did not complete"); }
         }
-        assert!((39..=41).contains(&steps));
+        assert!((59..=61).contains(&steps));
         assert_eq!(cf.progress, 1.0);
     }
 
@@ -266,9 +274,9 @@ mod tests {
 
     #[test]
     fn crossfade_melt_duration() {
-        assert_eq!(CrossfadeMode::FeedbackMelt.duration(), 2.5);
-        assert_eq!(CrossfadeMode::ParamInterpolation.duration(), 4.0);
-        assert_eq!(CrossfadeMode::Both.duration(), 4.0);
+        assert_eq!(CrossfadeMode::FeedbackMelt.duration(), 5.0);
+        assert_eq!(CrossfadeMode::ParamInterpolation.duration(), 6.0);
+        assert_eq!(CrossfadeMode::Both.duration(), 6.0);
     }
 
     #[test]

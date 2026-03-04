@@ -1,20 +1,19 @@
 use crate::analysis::{AnalysisResult, AudioAnalyzer};
-use crate::audio::AudioCapture;
 use crate::uniforms::AudioUniforms;
 
 /// Decay rate for beat indicator (drops from 1.0 to 0 over several frames).
 const BEAT_DECAY: f32 = 0.15;
 /// Smoothing factor for audio values (0 = no smoothing, 1 = frozen).
-const SMOOTH_RETAIN: f32 = 0.90;
+const SMOOTH_RETAIN: f32 = 0.95;
 const SMOOTH_INCOMING: f32 = 1.0 - SMOOTH_RETAIN;
 /// Auto-gain: target energy level and limits.
 const TARGET_ENERGY: f32 = 0.05;
-const MAX_GAIN: f32 = 10.0;
+const MAX_GAIN: f32 = 50.0;
 /// Auto-gain attack/release rates (asymmetric: fast attack, slow release).
-const GAIN_ATTACK: f32 = 0.04;
-const GAIN_RELEASE: f32 = 0.005;
+const GAIN_ATTACK: f32 = 0.05;
+const GAIN_RELEASE: f32 = 0.003;
 /// Noise gate: raw energy below this threshold is treated as silence.
-const NOISE_GATE: f32 = 0.003;
+const NOISE_GATE: f32 = 0.0001;
 
 pub struct AudioState {
     pub peak_energy: f32,
@@ -27,34 +26,25 @@ impl AudioState {
     }
 }
 
-/// Run analysis on audio samples and update uniforms. Returns the analysis
-/// result for use by the change detector.
-pub fn process_audio(
-    audio: &AudioCapture,
+/// Analyze samples and update uniforms + auto-gain.
+pub fn process_samples(
+    samples: &[f32],
     analyzer: &mut AudioAnalyzer,
-    sample_buf: &mut Vec<f32>,
     uniforms: &mut AudioUniforms,
     state: &mut AudioState,
     sensitivity: f32,
-) -> Option<AnalysisResult> {
-    audio.get_samples_into(sample_buf);
-    if sample_buf.is_empty() {
-        return None;
-    }
-    let result = analyzer.analyze(sample_buf);
+) -> AnalysisResult {
+    let result = analyzer.analyze(samples);
     update_auto_gain(state, result.energy);
     let gain = state.auto_gain * sensitivity;
     let gate = noise_gate(result.energy);
     apply_smoothing(uniforms, &result, gain, gate);
     apply_beat(uniforms, result.beat);
     uniforms.bands = result.bands;
-    Some(result)
+    result
 }
 
 pub fn update_auto_gain(state: &mut AudioState, energy: f32) {
-    if energy < NOISE_GATE {
-        return;
-    }
     let rate = if energy > state.peak_energy { GAIN_ATTACK } else { GAIN_RELEASE };
     state.peak_energy += (energy - state.peak_energy) * rate;
     state.peak_energy = state.peak_energy.max(0.001);
@@ -94,22 +84,24 @@ mod tests {
     #[test]
     fn noise_gate_blocks_below_threshold() {
         assert_eq!(noise_gate(0.0), 0.0);
-        assert_eq!(noise_gate(0.002), 0.0);
+        assert_eq!(noise_gate(0.00005), 0.0);
     }
 
     #[test]
     fn noise_gate_passes_above_threshold() {
-        assert_eq!(noise_gate(0.003), 1.0);
+        assert_eq!(noise_gate(NOISE_GATE), 1.0);
+        assert_eq!(noise_gate(0.001), 1.0);
         assert_eq!(noise_gate(0.1), 1.0);
     }
 
     #[test]
-    fn auto_gain_skips_below_noise_gate() {
+    fn auto_gain_adapts_to_quiet_signal() {
         let mut state = AudioState::new();
-        let orig = state.clone_values();
-        update_auto_gain(&mut state, 0.001);
-        assert_eq!(state.peak_energy, orig.0);
-        assert_eq!(state.auto_gain, orig.1);
+        let orig_gain = state.auto_gain;
+        for _ in 0..100 {
+            update_auto_gain(&mut state, 0.001);
+        }
+        assert!(state.auto_gain > orig_gain, "gain should ramp up for quiet signal");
     }
 
     #[test]
@@ -189,9 +181,4 @@ mod tests {
         assert_eq!(u.beat, 0.0);
     }
 
-    impl AudioState {
-        fn clone_values(&self) -> (f32, f32) {
-            (self.peak_energy, self.auto_gain)
-        }
-    }
 }
