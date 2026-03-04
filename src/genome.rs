@@ -13,6 +13,7 @@ impl Range {
         v.clamp(self.0, self.1)
     }
 
+    #[allow(dead_code)] // used in tests via Genome::random
     fn random(&self, rng: &mut impl Rng) -> f32 {
         rng.random::<f32>() * (self.1 - self.0) + self.0
     }
@@ -33,8 +34,8 @@ const ORBIT_SPEED_RANGE: Range = Range(0.1, 0.5);
 const WOBBLE_AMOUNT_RANGE: Range = Range(0.0, 1.0);
 
 enum FieldKind {
-    ContinuousArray(&'static Range, usize),
-    DiscreteArray(f32, usize),
+    ContinuousArray(&'static Range, #[allow(dead_code)] usize),
+    DiscreteArray(f32, #[allow(dead_code)] usize),
     Continuous(&'static Range),
     Discrete(f32),
 }
@@ -110,7 +111,7 @@ fn field_descriptors() -> Vec<FieldDescriptor> {
 /// All fields are f32 for easy interpolation and GPU transfer.
 /// Discrete parameters (shape types, combinator types, audio routing targets,
 /// transition type) are stored as f32 but take integer values.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Genome {
     pub shape_types: [f32; 4],
     pub shape_scales: [f32; 4],
@@ -152,6 +153,7 @@ impl Genome {
         }
     }
 
+    #[allow(dead_code)] // used in tests
     pub fn random(rng: &mut impl Rng) -> Self {
         let mut genome = Self::zeroed();
         for desc in &field_descriptors() {
@@ -196,14 +198,15 @@ impl Genome {
         true
     }
 
+    #[allow(dead_code)] // used in tests
     fn zeroed() -> Self {
-        // SAFETY: all fields are f32, and 0.0f32 is all-zero bits
-        unsafe { std::mem::zeroed() }
+        Self::default()
     }
 }
 
 // -- Field-level operations --
 
+#[allow(dead_code)] // used in tests via Genome::random
 fn random_field(kind: &FieldKind, rng: &mut impl Rng) -> Vec<f32> {
     match kind {
         FieldKind::ContinuousArray(range, len) => {

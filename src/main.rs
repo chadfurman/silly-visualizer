@@ -6,7 +6,6 @@ mod device_picker;
 mod genome;
 mod lineage;
 mod persistence;
-#[allow(dead_code)] // Wired in by later tasks.
 mod presets;
 mod renderer;
 mod replay;

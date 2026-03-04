@@ -2,8 +2,10 @@ use rand::Rng;
 
 use crate::genome::Genome;
 
+#[allow(dead_code)] // used in tests via advance()
 const CHILD_WEIGHT: f32 = 1.0;
 
+#[allow(dead_code)] // used in tests via advance()
 const ANCESTOR_WEIGHTS: [f32; 3] = [0.5, 0.25, 0.125];
 
 pub struct Lineage {
@@ -29,6 +31,7 @@ impl Lineage {
             + self.great_grandparent.is_some() as usize
     }
 
+    #[allow(dead_code)] // used in tests
     pub fn advance(&mut self, rng: &mut impl Rng, mutation_rate: f32) {
         let new_child = self.child.mutate(rng, mutation_rate);
         let blended = self.apply_ancestral_pull(new_child);
@@ -39,6 +42,7 @@ impl Lineage {
         self.shift_generations(genome);
     }
 
+    #[allow(dead_code)] // used in tests via advance()
     fn ancestors(&self) -> [Option<&Genome>; 3] {
         [
             self.parent.as_ref(),
@@ -47,6 +51,7 @@ impl Lineage {
         ]
     }
 
+    #[allow(dead_code)] // used in tests via advance()
     fn apply_ancestral_pull(&self, new_child: Genome) -> Genome {
         let mut blended = new_child;
         let mut total_weight = CHILD_WEIGHT;
@@ -60,7 +65,6 @@ impl Lineage {
 
     /// Advance by picking a random preset and applying light mutation.
     /// The crossfade system handles smooth transitions from current → new.
-    #[allow(dead_code)] // Will be called from app.rs in Task 3
     pub fn advance_from_preset(&mut self, rng: &mut impl Rng) {
         let new_child = crate::presets::random_preset_mutated(rng);
         self.shift_generations(new_child);

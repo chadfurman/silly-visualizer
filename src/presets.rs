@@ -199,6 +199,7 @@ pub static PRESETS: [Genome; PRESET_COUNT] = [
 ];
 
 /// Pick a random preset (no mutation).
+#[allow(dead_code)] // available for future use / tests
 pub fn random_preset() -> Genome {
     let idx = rand::rng().random_range(0..PRESET_COUNT);
     PRESETS[idx].clone()
